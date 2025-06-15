@@ -116,13 +116,13 @@ class SpikeSlabGibbsSampler:
     @staticmethod
     def _log_likelihood(logits: np.ndarray, y: np.ndarray) -> float:
         """Stable Bernoulli log likelihood under the logit parameterisation."""
-        return float(np.sum(
-            y * logits - np.where(
-                logits > 0,
-                logits + np.log1p(np.exp(-logits)),
-                np.log1p(np.exp(logits)),
+        return float(
+            np.sum(
+                y * logits
+                - np.maximum(logits, 0)
+                - np.log1p(np.exp(-np.abs(logits)))
             )
-        ))
+        )
 
     def _log_posterior_upsilon(self, k: int, upsilon_k: np.ndarray) -> float:
         logits = self.theta @ upsilon_k + self.X_aux @ self.gamma[k]
@@ -136,9 +136,17 @@ class SpikeSlabGibbsSampler:
         for k in range(self.k):
             for l in range(self.d):
                 v = self.upsilon[k, l]
-                p1 = self.pi * np.exp(-0.5 * v * v / self.tau1_sq) / np.sqrt(2 * np.pi * self.tau1_sq)
-                p0 = (1 - self.pi) * np.exp(-0.5 * v * v / self.tau0_sq) / np.sqrt(2 * np.pi * self.tau0_sq)
-                prob = p1 / (p1 + p0 + 1e-12)
+                log_p1 = (
+                    np.log(self.pi)
+                    - 0.5 * v * v / self.tau1_sq
+                    - 0.5 * np.log(2 * np.pi * self.tau1_sq)
+                )
+                log_p0 = (
+                    np.log(1 - self.pi)
+                    - 0.5 * v * v / self.tau0_sq
+                    - 0.5 * np.log(2 * np.pi * self.tau0_sq)
+                )
+                prob = 1.0 / (1.0 + np.exp(log_p0 - log_p1))
                 delta_new[k, l] = self.rng.binomial(1, prob)
         self.delta = delta_new
 
@@ -149,8 +157,8 @@ class SpikeSlabGibbsSampler:
             proposal = current + self.rng.normal(0.0, step_size, size=current.shape)
             log_p_curr = self._log_posterior_upsilon(k, current)
             log_p_prop = self._log_posterior_upsilon(k, proposal)
-            accept_prob = np.exp(log_p_prop - log_p_curr)
-            if self.rng.random() < accept_prob:
+            log_accept = log_p_prop - log_p_curr
+            if log_accept >= 0 or self.rng.random() < np.exp(log_accept):
                 upsilon_new[k] = proposal
         self.upsilon = upsilon_new
 

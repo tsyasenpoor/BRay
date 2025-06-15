@@ -35,7 +35,8 @@ def generate_synthetic_data(
     beta = rng.gamma(c, 1.0 / eta[:, None], size=(n_genes, n_programs))
 
     rate = theta @ beta.T
-    X = rng.poisson(rate)
+    log_rate = np.log(rate + 1e-12)
+    X = rng.poisson(np.exp(log_rate))
 
     if n_aux == 1:
         X_aux = np.ones((n_samples, 1))
@@ -63,6 +64,7 @@ def generate_synthetic_data(
         "upsilon": upsilon,
     }
 
+    params["log_rate"] = log_rate
     return X, Y, X_aux, params
 
 
@@ -77,7 +79,7 @@ if __name__ == "__main__":
     sampler = SpikeSlabGibbsSampler(X, Y, X_aux, n_programs=d, seed=0)
     sampler.run(200)
 
-    true_rate = params["theta"] @ params["beta"].T
-    est_rate = sampler.theta @ sampler.beta.T
-    corr = np.corrcoef(true_rate.flatten(), est_rate.flatten())[0, 1]
+    log_rate_true = params["log_rate"]
+    log_rate_est = np.log(sampler.theta @ sampler.beta.T + 1e-12)
+    corr = np.corrcoef(log_rate_true.flatten(), log_rate_est.flatten())[0, 1]
     print(f"Correlation between true and estimated rate matrix: {corr:.3f}")
