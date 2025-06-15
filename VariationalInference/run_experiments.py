@@ -693,8 +693,8 @@ def main():
             print(f"Using MASKED configuration with {mask_array.shape[1]} pathways")
         else:
             print(f"Using UNMASKED configuration with {args.d} gene programs")
-        print(f"Using standard batch Variational Inference with max_iter={args.max_iter}")
-        std_results = run_all_experiments(
+
+            std_results = run_all_experiments(
             datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
             pathway_names=pathway_names_list
