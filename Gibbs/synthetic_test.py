@@ -1,6 +1,7 @@
 import numpy as np
 from numpy.random import default_rng
-from scipy.special import expit
+from scipy.special import expit, logsumexp
+
 
 from gibbs import SpikeSlabGibbsSampler
 
@@ -31,11 +32,16 @@ def generate_synthetic_data(
     xi = rng.gamma(a_prime, 1.0 / b_prime, size=n_samples)
     eta = rng.gamma(c_prime, 1.0 / d_prime, size=n_genes)
 
-    theta = rng.gamma(a, 1.0 / xi[:, None], size=(n_samples, n_programs))
-    beta = rng.gamma(c, 1.0 / eta[:, None], size=(n_genes, n_programs))
+    log_theta = np.log(
+        rng.gamma(a, 1.0 / xi[:, None], size=(n_samples, n_programs)) + 1e-12
+    )
+    log_beta = np.log(
+        rng.gamma(c, 1.0 / eta[:, None], size=(n_genes, n_programs)) + 1e-12
+    )
 
-    rate = theta @ beta.T
-    X = rng.poisson(rate)
+    log_rate = logsumexp(log_theta[:, None, :] + log_beta[None, :, :], axis=2)
+    X = rng.poisson(np.exp(log_rate))
+
 
     if n_aux == 1:
         X_aux = np.ones((n_samples, 1))
@@ -48,11 +54,13 @@ def generate_synthetic_data(
     upsilon = rng.normal(0.0, np.sqrt(tau0_sq), size=(n_classes, n_programs))
     inds = delta == 1
     upsilon[inds] = rng.normal(0.0, np.sqrt(tau1_sq), size=np.count_nonzero(inds))
-
+    
+    theta = np.exp(log_theta)
+    beta = np.exp(log_beta)
     logits = theta @ upsilon.T + X_aux @ gamma.T
     prob = expit(logits)
     Y = rng.binomial(1, prob)
-
+    
     params = {
         "theta": theta,
         "beta": beta,
@@ -61,8 +69,10 @@ def generate_synthetic_data(
         "gamma": gamma,
         "delta": delta,
         "upsilon": upsilon,
+        "log_theta": log_theta,
+        "log_beta": log_beta,
+        "log_rate": log_rate,
     }
-
     return X, Y, X_aux, params
 
 
@@ -77,7 +87,9 @@ if __name__ == "__main__":
     sampler = SpikeSlabGibbsSampler(X, Y, X_aux, n_programs=d, seed=0)
     sampler.run(200)
 
-    true_rate = params["theta"] @ params["beta"].T
-    est_rate = sampler.theta @ sampler.beta.T
-    corr = np.corrcoef(true_rate.flatten(), est_rate.flatten())[0, 1]
+    log_rate_true = params["log_rate"]
+    log_rate_est = logsumexp(
+        sampler.log_theta[:, None, :] + sampler.log_beta[None, :, :], axis=2
+    )
+    corr = np.corrcoef(log_rate_true.flatten(), log_rate_est.flatten())[0, 1]
     print(f"Correlation between true and estimated rate matrix: {corr:.3f}")
