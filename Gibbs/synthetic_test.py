@@ -2,6 +2,7 @@ import numpy as np
 from numpy.random import default_rng
 from scipy.special import expit, logsumexp
 
+
 from gibbs import SpikeSlabGibbsSampler
 
 
@@ -41,6 +42,7 @@ def generate_synthetic_data(
     log_rate = logsumexp(log_theta[:, None, :] + log_beta[None, :, :], axis=2)
     X = rng.poisson(np.exp(log_rate))
 
+
     if n_aux == 1:
         X_aux = np.ones((n_samples, 1))
     else:
@@ -52,13 +54,13 @@ def generate_synthetic_data(
     upsilon = rng.normal(0.0, np.sqrt(tau0_sq), size=(n_classes, n_programs))
     inds = delta == 1
     upsilon[inds] = rng.normal(0.0, np.sqrt(tau1_sq), size=np.count_nonzero(inds))
-
+    
     theta = np.exp(log_theta)
     beta = np.exp(log_beta)
     logits = theta @ upsilon.T + X_aux @ gamma.T
     prob = expit(logits)
     Y = rng.binomial(1, prob)
-
+    
     params = {
         "theta": theta,
         "beta": beta,
