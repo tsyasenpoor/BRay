@@ -19,7 +19,6 @@ import random  # Import for random sampling of pathways
 import gzip # Import for gzipping files
 
 from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear_memory
-from svi_model import run_stochastic_variational_inference
 
 # Log initial memory
 print(f"Initial memory usage: {get_memory_usage():.2f} MB")
@@ -537,9 +536,6 @@ def main():
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
     
-    parser.add_argument("--svi", action="store_true", help="Use Stochastic Variational Inference instead of batch VI")
-    parser.add_argument("--batch_size", type=int, default=100, help="Batch size for SVI (only used with --svi)")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs for SVI (only used with --svi)")
     
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -697,16 +693,7 @@ def main():
             print(f"Using MASKED configuration with {mask_array.shape[1]} pathways")
         else:
             print(f"Using UNMASKED configuration with {args.d} gene programs")
-        if args.svi:
-            print(f"Using STOCHASTIC Variational Inference with batch size={args.batch_size}, epochs={args.epochs}")
-            std_results = run_all_svi_experiments(
-                datasets, hyperparams_map, output_dir=run_dir,
-                seed=None, mask=current_mask_for_run, 
-                batch_size=args.batch_size, epochs=args.epochs,
-                pathway_names=pathway_names_list
-            )
-        else:
-            print(f"Using standard batch Variational Inference with max_iter={args.max_iter}")
+        print(f"Using standard batch Variational Inference with max_iter={args.max_iter}")
         std_results = run_all_experiments(
             datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
@@ -733,217 +720,6 @@ def main():
         else:
             print(f"{exp_name:<30} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
 
-def run_all_svi_experiments(datasets, hyperparams_map, output_dir, seed=None, 
-                          mask=None, batch_size=100, epochs=10, pathway_names=None):
-    os.makedirs(output_dir, exist_ok=True)
-    all_results = {}
-
-    for dataset_name, (adata, label_col) in datasets.items():
-        print(f"\nRunning SVI experiment on dataset {dataset_name}, label={label_col}")
-        
-        Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-        X = adata.X  
-        var_names = list(adata.var_names)
-
-        x_aux = np.ones((X.shape[0],1)) 
-        sample_ids = adata.obs.index.tolist()
-        
-        log_array_sizes({
-            'X': X,
-            'Y': Y,
-            'x_aux': x_aux
-        })
-        
-        scores = None
-        if 'cyto_seed_score' in adata.obs:
-            scores = adata.obs['cyto_seed_score'].values
-            print(f"Found cyto_seed_score in dataset with mean value: {np.mean(scores):.4f}")
-
-        hyperparams = hyperparams_map[dataset_name].copy()  
-        d_values = hyperparams.pop("d")
-        for d in d_values:
-            print(f"Running with d={d}")
-            
-            hyperparams["d"] = d
-            
-            if mask is not None:
-                print(f"Using mask with shape: {mask.shape}")
-                log_array_sizes({'mask': mask})
-            
-            clear_memory()
-
-            test_split_size = 0.15
-            val_split_size = 0.15
-            
-            # Split data into train/val/test
-            X_train, X_temp, XA_train, XA_temp, y_train, y_temp, ids_train, ids_temp, scores_train, scores_temp = train_test_split(
-                X, x_aux, Y, sample_ids, scores, test_size=(test_split_size + val_split_size), random_state=seed
-            )
-
-            relative_test_size = test_split_size / (test_split_size + val_split_size)
-            X_val, X_test, XA_val, XA_test, y_val, y_test, ids_val, ids_test, scores_val, scores_test = train_test_split(
-                X_temp, XA_temp, y_temp, ids_temp, scores_temp, test_size=relative_test_size, random_state=seed
-            )
-            
-            print(f"Train shapes - X_train: {X_train.shape}, XA_train: {XA_train.shape}, y_train: {y_train.shape}")
-            print(f"Val shapes - X_val: {X_val.shape}, XA_val: {XA_val.shape}, y_val: {y_val.shape}")
-            print(f"Test shapes - X_test: {X_test.shape}, XA_test: {XA_test.shape}, y_test: {y_test.shape}")
-            
-            # Initialize parameters if using beta_init
-            beta_init = None  # Set beta_init if needed
-            
-            # Train model using SVI
-            q_params, elbo_hist = run_stochastic_variational_inference(
-                X_train, y_train, XA_train, hyperparams,
-                minibatch_size=batch_size, epochs=epochs,
-                verbose=True, label_scale=0.1, mask=mask,
-                patience=5, min_delta=1e-3, beta_init=beta_init
-            )
-            
-            # Get expectations for evaluation
-            from vi_model_complete import evaluate_model, extract_top_genes
-            
-            # Compute expectations
-            E_eta = q_params['alpha_eta'] / jnp.maximum(q_params['omega_eta'], 1e-10)
-            E_beta = q_params['alpha_beta'] / jnp.maximum(q_params['omega_beta'], 1e-10)
-            if mask is not None:
-                E_beta = E_beta * mask
-            E_xi = q_params['alpha_xi'] / jnp.maximum(q_params['omega_xi'], 1e-10)
-            E_theta = q_params['alpha_theta'] / jnp.maximum(q_params['omega_theta'], 1e-10)
-            E_gamma = q_params['gamma']
-            E_upsilon = q_params['upsilon']
-            
-            # Evaluate the model
-            train_metrics = evaluate_model(X_train, XA_train, y_train, q_params,
-                                         hyperparams, fold_in=False,
-                                         label_scale=0.1, return_probs=True)
-            
-            val_metrics = evaluate_model(X_val, XA_val, y_val, q_params,
-                                       hyperparams, fold_in=True, 
-                                       label_scale=0.0, return_probs=True)
-            
-            test_metrics = evaluate_model(X_test, XA_test, y_test, q_params,
-                                        hyperparams, fold_in=True,
-                                        label_scale=0.0, return_probs=True)
-            
-            # Extract top genes
-            top_genes = extract_top_genes(E_beta, var_names)
-            
-            # Prepare results
-            results = {
-                "train_metrics": train_metrics,
-                "val_metrics": val_metrics,
-                "test_metrics": test_metrics,
-                "alpha_beta": q_params['alpha_beta'].tolist(),
-                "omega_beta": q_params['omega_beta'].tolist(),
-                "E_beta": E_beta.tolist(),
-                "E_upsilon": E_upsilon.tolist(),
-                "elbo_history": elbo_hist,
-                "top_genes": top_genes,
-                "convergence_info": q_params.get('convergence_info', {})
-            }
-            
-            # Generate result DataFrames
-            import pandas as pd
-            
-            # Create train results DataFrame
-            train_df = pd.DataFrame({
-                'sample_id': ids_train,
-                'true_label': y_train.flatten(),  # Ensure 1-dimensional
-                'predicted_prob': np.array(train_metrics['probabilities']).flatten(),  # Flatten to ensure 1D
-                'predicted_label': (np.array(train_metrics['probabilities']).flatten() > 0.5).astype(int),
-                'set': 'train'
-            })
-            
-            # Create validation results DataFrame
-            val_df = pd.DataFrame({
-                'sample_id': ids_val,
-                'true_label': y_val.flatten(),  # Ensure 1-dimensional
-                'predicted_prob': np.array(val_metrics['probabilities']).flatten(),  # Flatten to ensure 1D
-                'predicted_label': (np.array(val_metrics['probabilities']).flatten() > 0.5).astype(int),
-                'set': 'validation'
-            })
-            
-            # Create test results DataFrame
-            test_df = pd.DataFrame({
-                'sample_id': ids_test,
-                'true_label': y_test.flatten(),  # Ensure 1-dimensional
-                'predicted_prob': np.array(test_metrics['probabilities']).flatten(),  # Flatten to ensure 1D
-                'predicted_label': (np.array(test_metrics['probabilities']).flatten() > 0.5).astype(int),
-                'set': 'test'
-            })
-            
-            results["train_results_df"] = train_df
-            results["val_results_df"] = val_df
-            results["test_results_df"] = test_df
-            
-            # Save results to files
-            train_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_svi_train_results.csv.gz")
-            val_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_svi_val_results.csv.gz")
-            test_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_svi_test_results.csv.gz")
-            
-            train_df.to_csv(train_csv_path, index=False, compression='gzip')
-            val_df.to_csv(val_csv_path, index=False, compression='gzip')
-            test_df.to_csv(test_csv_path, index=False, compression='gzip')
-            
-            # Save main results without large arrays
-            main_results = results.copy()
-            if "alpha_beta" in main_results:
-                del main_results["alpha_beta"]
-            if "omega_beta" in main_results:
-                del main_results["omega_beta"]
-            if "top_genes" in main_results:
-                del main_results["top_genes"]
-
-            if "train_results_df" in main_results:
-                del main_results["train_results_df"]
-            if "val_results_df" in main_results:
-                del main_results["val_results_df"]
-            if "test_results_df" in main_results:
-                del main_results["test_results_df"]
-
-            for key, value in list(main_results.items()):
-                if isinstance(value, dict):
-                    for inner_key, inner_value in list(value.items()):
-                        if hasattr(inner_value, 'tolist'):  # Check if it's a numpy array
-                            main_results[key][inner_key] = inner_value.tolist()
-                        elif isinstance(inner_value, (pd.DataFrame, pd.Series)):
-                            # Convert DataFrame/Series to a dictionary or list
-                            if isinstance(inner_value, pd.DataFrame):
-                                main_results[key][inner_key] = inner_value.to_dict(orient='records')
-                            else:
-                                main_results[key][inner_key] = inner_value.tolist()
-                elif hasattr(value, 'tolist'):  # Check if it's a numpy array
-                    main_results[key] = value.tolist()
-                elif isinstance(value, (pd.DataFrame, pd.Series)):
-                    # Convert DataFrame/Series to a dictionary or list
-                    if isinstance(value, pd.DataFrame):
-                        main_results[key] = value.to_dict(orient='records')
-                    else:
-                        main_results[key] = value.tolist()
-            
-            results_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_svi_results_with_scores.json.gz")
-            with gzip.open(results_json_path, "wt", encoding="utf-8") as f:
-                json.dump(main_results, f, indent=2)
-            
-            if mask is not None:
-                pathway_results = create_pathway_results(results, var_names, mask, pathway_names)
-                pathway_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_svi_pathway_results.json.gz")
-                with gzip.open(pathway_json_path, "wt", encoding="utf-8") as f:
-                    json.dump(pathway_results, f, indent=2)
-                print(f"Saved pathway-specific results to {pathway_json_path}")
-            else:
-                gene_program_results = create_gene_program_results(results, var_names)
-                gp_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_svi_gene_program_results.json.gz")
-                with gzip.open(gp_json_path, "wt", encoding="utf-8") as f:
-                    json.dump(gene_program_results, f, indent=2)
-                print(f"Saved complete gene program results to {gp_json_path}")
-            
-            all_results[f"{dataset_name}_{label_col}_d_{d}_svi"] = results
-            
-            clear_memory()
-    
-    return all_results
 
 if __name__ == "__main__":
     import sys
