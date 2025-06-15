@@ -1,6 +1,6 @@
 import numpy as np
 from numpy.random import default_rng
-from scipy.special import expit
+from scipy.special import expit, logsumexp
 
 
 class SpikeSlabGibbsSampler:
@@ -53,10 +53,14 @@ class SpikeSlabGibbsSampler:
     # ------------------------------------------------------------------
     def _init_params(self) -> None:
         """Initialise latent variables and parameters."""
-        self.theta = self.rng.gamma(1.0, 1.0, size=(self.n, self.d))
-        self.beta = self.rng.gamma(1.0, 1.0, size=(self.p, self.d))
-        self.xi = self.rng.gamma(1.0, 1.0, size=self.n)
-        self.eta = self.rng.gamma(1.0, 1.0, size=self.p)
+        self.log_theta = np.log(
+            self.rng.gamma(1.0, 1.0, size=(self.n, self.d)) + 1e-12
+        )
+        self.log_beta = np.log(
+            self.rng.gamma(1.0, 1.0, size=(self.p, self.d)) + 1e-12
+        )
+        self.log_xi = np.log(self.rng.gamma(1.0, 1.0, size=self.n) + 1e-12)
+        self.log_eta = np.log(self.rng.gamma(1.0, 1.0, size=self.p) + 1e-12)
 
         self.gamma = self.rng.normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q))
 
@@ -64,40 +68,57 @@ class SpikeSlabGibbsSampler:
         self.upsilon = self.rng.normal(0.0, 0.1, size=(self.k, self.d))
 
     # ------------------------------------------------------------------
+    @property
+    def theta(self) -> np.ndarray:
+        return np.exp(self.log_theta)
+
+    @property
+    def beta(self) -> np.ndarray:
+        return np.exp(self.log_beta)
+
+    @property
+    def xi_val(self) -> np.ndarray:
+        return np.exp(self.log_xi)
+
+    @property
+    def eta_val(self) -> np.ndarray:
+        return np.exp(self.log_eta)
+
+    # ------------------------------------------------------------------
     # Conjugate updates for gamma-distributed parameters
     def _update_theta(self) -> None:
-        theta_new = np.zeros_like(self.theta)
+        theta_new = np.zeros_like(self.log_theta)
         for i in range(self.n):
             for l in range(self.d):
-                rate = self.xi[i] + self.beta[:, l].sum()
-                shape = self.a + np.dot(self.X[i], self.beta[:, l])
+                rate = np.exp(self.log_xi[i]) + np.exp(self.log_beta[:, l]).sum()
+                shape = self.a + np.dot(self.X[i], np.exp(self.log_beta[:, l]))
                 theta_new[i, l] = self.rng.gamma(shape, 1.0 / rate)
-        self.theta = theta_new
+        self.log_theta = np.log(theta_new + 1e-12)
 
     def _update_beta(self) -> None:
-        beta_new = np.zeros_like(self.beta)
+        beta_new = np.zeros_like(self.log_beta)
         for j in range(self.p):
             for l in range(self.d):
-                rate = self.eta[j] + self.theta[:, l].sum()
-                shape = self.c + np.dot(self.X[:, j], self.theta[:, l])
+                rate = np.exp(self.log_eta[j]) + np.exp(self.log_theta[:, l]).sum()
+                shape = self.c + np.dot(self.X[:, j], np.exp(self.log_theta[:, l]))
                 beta_new[j, l] = self.rng.gamma(shape, 1.0 / rate)
-        self.beta = beta_new
+        self.log_beta = np.log(beta_new + 1e-12)
 
     def _update_xi(self) -> None:
-        xi_new = np.zeros_like(self.xi)
+        xi_new = np.zeros_like(self.log_xi)
         for i in range(self.n):
-            rate = self.b_prime + self.theta[i].sum()
+            rate = self.b_prime + np.exp(self.log_theta[i]).sum()
             shape = self.a_prime + self.a * self.d
             xi_new[i] = self.rng.gamma(shape, 1.0 / rate)
-        self.xi = xi_new
+        self.log_xi = np.log(xi_new + 1e-12)
 
     def _update_eta(self) -> None:
-        eta_new = np.zeros_like(self.eta)
+        eta_new = np.zeros_like(self.log_eta)
         for j in range(self.p):
-            rate = self.d_prime + self.beta[j].sum()
+            rate = self.d_prime + np.exp(self.log_beta[j]).sum()
             shape = self.c_prime + self.c * self.d
             eta_new[j] = self.rng.gamma(shape, 1.0 / rate)
-        self.eta = eta_new
+        self.log_eta = np.log(eta_new + 1e-12)
 
     # ------------------------------------------------------------------
     def _update_gamma(self) -> None:
@@ -106,7 +127,7 @@ class SpikeSlabGibbsSampler:
         precision = XTX / self.sigma_gamma_sq + np.eye(self.q)
         cov = np.linalg.inv(precision)
         for k in range(self.k):
-            logits = self.theta @ self.upsilon[k] + self.X_aux @ self.gamma[k]
+            logits = np.exp(self.log_theta) @ self.upsilon[k] + self.X_aux @ self.gamma[k]
             z = self.Y[:, k] - expit(logits)
             mean = cov @ self.X_aux.T @ z / self.sigma_gamma_sq
             gamma_new[k] = self.rng.multivariate_normal(mean, cov)
@@ -116,16 +137,16 @@ class SpikeSlabGibbsSampler:
     @staticmethod
     def _log_likelihood(logits: np.ndarray, y: np.ndarray) -> float:
         """Stable Bernoulli log likelihood under the logit parameterisation."""
-        return float(np.sum(
-            y * logits - np.where(
-                logits > 0,
-                logits + np.log1p(np.exp(-logits)),
-                np.log1p(np.exp(logits)),
+        return float(
+            np.sum(
+                y * logits
+                - np.maximum(logits, 0)
+                - np.log1p(np.exp(-np.abs(logits)))
             )
-        ))
+        )
 
     def _log_posterior_upsilon(self, k: int, upsilon_k: np.ndarray) -> float:
-        logits = self.theta @ upsilon_k + self.X_aux @ self.gamma[k]
+        logits = np.exp(self.log_theta) @ upsilon_k + self.X_aux @ self.gamma[k]
         log_lik = self._log_likelihood(logits, self.Y[:, k])
         prior_var = np.where(self.delta[k] == 1, self.tau1_sq, self.tau0_sq)
         log_prior = -0.5 * np.sum(upsilon_k**2 / prior_var)
@@ -136,9 +157,17 @@ class SpikeSlabGibbsSampler:
         for k in range(self.k):
             for l in range(self.d):
                 v = self.upsilon[k, l]
-                p1 = self.pi * np.exp(-0.5 * v * v / self.tau1_sq) / np.sqrt(2 * np.pi * self.tau1_sq)
-                p0 = (1 - self.pi) * np.exp(-0.5 * v * v / self.tau0_sq) / np.sqrt(2 * np.pi * self.tau0_sq)
-                prob = p1 / (p1 + p0 + 1e-12)
+                log_p1 = (
+                    np.log(self.pi)
+                    - 0.5 * v * v / self.tau1_sq
+                    - 0.5 * np.log(2 * np.pi * self.tau1_sq)
+                )
+                log_p0 = (
+                    np.log(1 - self.pi)
+                    - 0.5 * v * v / self.tau0_sq
+                    - 0.5 * np.log(2 * np.pi * self.tau0_sq)
+                )
+                prob = 1.0 / (1.0 + np.exp(log_p0 - log_p1))
                 delta_new[k, l] = self.rng.binomial(1, prob)
         self.delta = delta_new
 
@@ -149,8 +178,8 @@ class SpikeSlabGibbsSampler:
             proposal = current + self.rng.normal(0.0, step_size, size=current.shape)
             log_p_curr = self._log_posterior_upsilon(k, current)
             log_p_prop = self._log_posterior_upsilon(k, proposal)
-            accept_prob = np.exp(log_p_prop - log_p_curr)
-            if self.rng.random() < accept_prob:
+            log_accept = log_p_prop - log_p_curr
+            if log_accept >= 0 or self.rng.random() < np.exp(log_accept):
                 upsilon_new[k] = proposal
         self.upsilon = upsilon_new
 
