@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+
 """Run Gibbs sampler experiments with train/val/test splits."""
 
 from __future__ import annotations
