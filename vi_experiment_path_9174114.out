@@ -1,0 +1,7 @@
+Job started on: xanadu-70
+Job started at: Sun Jun 15 22:03:42 EDT 2025
+SLURM_JOB_ID: 9174114
+SLURM_SUBMIT_DIR: /labs/Aguiar/SSPA_BRAY/BRay
+Python version: Python 3.11.12
+Running script: /labs/Aguiar/SSPA_BRAY/BRay/VariationalInference/run_experiments.py 20 times
+Running iteration 1 of 20 in /labs/Aguiar/SSPA_BRAY/BRay/2025-06-15_run_1

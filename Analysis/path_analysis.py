@@ -263,4 +263,3 @@ def gene_program_enrichment(
         prev_q = q
     df["FDR"] = bh_values
     return df
-
