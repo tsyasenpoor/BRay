@@ -101,8 +101,8 @@ def main() -> None:
 
     # ------------------------------------------------------------------
     # Load real dataset from data.py
-    ajm_ap, ajm_cyto = prepare_ajm_dataset()
-    adata = ajm_cyto if args.label == "cyto" else ajm_ap
+    _, ajm_cyto = prepare_ajm_dataset()
+    adata = ajm_cyto
     adata = filter_protein_coding_genes(adata, gene_annotation)
 
     Y = adata.obs[args.label].astype(int).values.reshape(-1, 1)
