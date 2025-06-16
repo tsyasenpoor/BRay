@@ -35,18 +35,22 @@ def process_phi_batch(theta_batch, beta, x_batch):
     alpha_theta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=1)
     return alpha_beta_batch_update, alpha_theta_batch_update
 
-def neg_logpost_gamma(gamma, X_aux, y, sigma, offset=1e-15):
-    z = X_aux @ gamma.T  
+def neg_logpost_gamma(gamma, X_aux, y, sigma, offset=1e-15, weights=None):
+    z = X_aux @ gamma.T
     p = jax.nn.sigmoid(z)
-    log_lik = jnp.sum(y * jnp.log(p + offset) + (1.0 - y) * jnp.log(1.0 - p + offset))
+    if weights is None:
+        weights = jnp.ones_like(y)
+    log_lik = jnp.sum(weights * (y * jnp.log(p + offset) + (1.0 - y) * jnp.log(1.0 - p + offset)))
     log_prior = -0.5 * jnp.sum(gamma**2) / (sigma**2)
     return - (log_lik + log_prior)
 
-def make_gamma_grad_and_hess(X_aux, y, sigma):
+def make_gamma_grad_and_hess(X_aux, y, sigma, weights=None):
     grad_fn = jax.grad(neg_logpost_gamma, argnums=0)
     hess_fn = jax.hessian(neg_logpost_gamma, argnums=0)
-    return (lambda g: grad_fn(g, X_aux, y, sigma),
-            lambda g: hess_fn(g, X_aux, y, sigma))
+    return (
+        lambda g: grad_fn(g, X_aux, y, sigma, weights),
+        lambda g: hess_fn(g, X_aux, y, sigma, weights),
+    )
 
 @partial(jax.jit, static_argnums=(1, 2))  # Mark grad_fn and hess_fn as static arguments
 def newton_step_gamma(gamma, grad_fn, hess_fn, learning_rate=0.1):
@@ -64,7 +68,7 @@ def newton_step_gamma(gamma, grad_fn, hess_fn, learning_rate=0.1):
     
     return gamma - learning_rate * step, H_reg
 
-def newton_map_gamma(X_aux, y, sigma, max_iters=50, tol=1e-6, learning_rate=0.1, gamma_init=None):
+def newton_map_gamma(X_aux, y, sigma, max_iters=50, tol=1e-6, learning_rate=0.1, gamma_init=None, weights=None):
     if len(X_aux.shape) == 1:
         X_aux = X_aux.reshape(-1, 1)
     p_aux = X_aux.shape[1]
@@ -76,7 +80,7 @@ def newton_map_gamma(X_aux, y, sigma, max_iters=50, tol=1e-6, learning_rate=0.1,
         key = jax.random.PRNGKey(int(random_int))
         gamma = jnp.array(jax.random.normal(key, (p_aux,))) * 0.01
     
-    grad_fn, hess_fn = make_gamma_grad_and_hess(X_aux, y, sigma)
+    grad_fn, hess_fn = make_gamma_grad_and_hess(X_aux, y, sigma, weights)
     
     # Define a jitted step function to improve performance
     @jax.jit
@@ -100,22 +104,26 @@ def newton_map_gamma(X_aux, y, sigma, max_iters=50, tol=1e-6, learning_rate=0.1,
     return gamma, H_final
 
 
-def neg_logpost_upsilon(upsilon, theta, y, tau, offset=1e-15):
+def neg_logpost_upsilon(upsilon, theta, y, tau, offset=1e-15, weights=None):
     if len(theta.shape) == 1:
         theta = theta.reshape(-1, 1)
 
-    z = jnp.dot(theta, upsilon)  
+    z = jnp.dot(theta, upsilon)
     p = jax.nn.sigmoid(z)
-    log_lik = jnp.sum(y * jnp.log(p + offset) + (1 - y) * jnp.log(1 - p + offset))
+    if weights is None:
+        weights = jnp.ones_like(y)
+    log_lik = jnp.sum(weights * (y * jnp.log(p + offset) + (1 - y) * jnp.log(1 - p + offset)))
     # Use a Laplace prior to encourage sparsity
     log_prior = -jnp.sum(jnp.abs(upsilon)) / tau - upsilon.size * jnp.log(2 * tau)
     return - (log_lik + log_prior)
 
-def make_upsilon_grad_and_hess(theta, y, tau):
+def make_upsilon_grad_and_hess(theta, y, tau, weights=None):
     grad_fn = jax.grad(neg_logpost_upsilon, argnums=0)
     hess_fn = jax.hessian(neg_logpost_upsilon, argnums=0)
-    return (lambda u: grad_fn(u, theta, y, tau),
-            lambda u: hess_fn(u, theta, y, tau))
+    return (
+        lambda u: grad_fn(u, theta, y, tau, weights),
+        lambda u: hess_fn(u, theta, y, tau, weights),
+    )
 
 @partial(jax.jit, static_argnums=(1, 2))  # Mark grad_fn and hess_fn as static arguments
 def newton_step_upsilon(upsilon, grad_fn, hess_fn, learning_rate=0.1):
@@ -131,7 +139,7 @@ def newton_step_upsilon(upsilon, grad_fn, hess_fn, learning_rate=0.1):
     
     return upsilon - learning_rate * step, H_reg
 
-def newton_map_upsilon(theta, y, tau, max_iters=50, tol=1e-6, learning_rate=0.1, upsilon_init=None):
+def newton_map_upsilon(theta, y, tau, max_iters=50, tol=1e-6, learning_rate=0.1, upsilon_init=None, weights=None):
     if len(theta.shape) == 1:
         theta = theta.reshape(-1, 1)
     d = theta.shape[1]
@@ -143,7 +151,7 @@ def newton_map_upsilon(theta, y, tau, max_iters=50, tol=1e-6, learning_rate=0.1,
         key = jax.random.PRNGKey(int(random_int))
         upsilon = jnp.array(jax.random.normal(key, (d,))) * 0.1
 
-    grad_fn, hess_fn = make_upsilon_grad_and_hess(theta, y, tau)
+    grad_fn, hess_fn = make_upsilon_grad_and_hess(theta, y, tau, weights)
     
     # Define a jitted step function to improve performance
     @jax.jit
@@ -733,9 +741,21 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams,
         lr_upsilon = 0.05 # Further reduce learning rate for upsilon
 
         # Update gamma
-        gamma_k, H_gamma = newton_map_gamma(x_aux, y_data[:, k], sigma,
-                                           gamma_init=gamma_old[k],
-                                           learning_rate=lr_gamma)
+        pos_count = jnp.sum(y_data[:, k])
+        neg_count = y_data.shape[0] - pos_count
+        total = y_data.shape[0]
+        w_pos = total / (2 * pos_count + 1e-8)
+        w_neg = total / (2 * neg_count + 1e-8)
+        sample_weights = jnp.where(y_data[:, k] == 1, w_pos, w_neg)
+
+        gamma_k, H_gamma = newton_map_gamma(
+            x_aux,
+            y_data[:, k],
+            sigma,
+            gamma_init=gamma_old[k],
+            learning_rate=lr_gamma,
+            weights=sample_weights,
+        )
         
         # Apply damping to smooth gamma updates
         gamma_k = gamma_old[k] * (1 - damping_factor) + gamma_k * damping_factor
@@ -758,9 +778,14 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams,
             update_mask = update_mask.at[0::2].set(0)
         
         # Get update for the selected dimensions
-        upsilon_update, H_upsilon = newton_map_upsilon(E_theta_for_ups, y_data[:, k], tau,
-                                                     upsilon_init=upsilon_old[k],
-                                                     learning_rate=lr_upsilon)
+        upsilon_update, H_upsilon = newton_map_upsilon(
+            E_theta_for_ups,
+            y_data[:, k],
+            tau,
+            upsilon_init=upsilon_old[k],
+            learning_rate=lr_upsilon,
+            weights=sample_weights,
+        )
         
         # Apply update only to selected dimensions
         upsilon_k = upsilon_k * (1 - update_mask) + upsilon_update * update_mask
