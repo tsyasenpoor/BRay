@@ -10,7 +10,11 @@ from sklearn.model_selection import train_test_split
 from scipy.special import expit
 
 from gibbs import SpikeSlabGibbsSampler
-from synthetic_test import generate_synthetic_data
+from data import (
+    prepare_ajm_dataset,
+    filter_protein_coding_genes,
+    gene_annotation,
+)
 
 
 def custom_train_test_split(*arrays: np.ndarray, test_size: float, val_size: float, random_state: int | None = None):
@@ -83,25 +87,29 @@ def evaluate_set(theta: np.ndarray, X_aux: np.ndarray, Y: np.ndarray, sampler: S
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Gibbs sampler experiments")
-    parser.add_argument("--n_samples", type=int, default=100, help="Number of synthetic samples")
-    parser.add_argument("--n_genes", type=int, default=20, help="Number of genes")
     parser.add_argument("--n_programs", type=int, default=3, help="Number of gene programs")
     parser.add_argument("--n_iter", type=int, default=200, help="Number of Gibbs iterations for training")
     parser.add_argument("--fold_in_iter", type=int, default=50, help="Iterations for fold-in theta inference")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument(
+        "--label",
+        choices=["cyto", "ap"],
+        default="cyto",
+        help="Which label column to use from the AJM dataset",
+    )
     args = parser.parse_args()
 
-    X, Y, X_aux, _ = generate_synthetic_data(
-        n_samples=args.n_samples,
-        n_genes=args.n_genes,
-        n_aux=1,
-        n_classes=1,
-        n_programs=args.n_programs,
-        seed=args.seed,
-    )
+    # ------------------------------------------------------------------
+    # Load real dataset from data.py
+    ajm_ap, ajm_cyto = prepare_ajm_dataset()
+    adata = ajm_cyto if args.label == "cyto" else ajm_ap
+    adata = filter_protein_coding_genes(adata, gene_annotation)
 
-    # Ensure arrays have correct shapes
-    Y = Y.astype(int)
+    Y = adata.obs[args.label].astype(int).values.reshape(-1, 1)
+    X = adata.X
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+    X_aux = np.ones((X.shape[0], 1))
 
     splits = custom_train_test_split(X, Y, X_aux, test_size=0.15, val_size=0.15, random_state=args.seed)
     X_tr, X_val, X_te, Y_tr, Y_val, Y_te, X_aux_tr, X_aux_val, X_aux_te = splits
