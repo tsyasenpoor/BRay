@@ -172,3 +172,95 @@ def calculate_weighted_pathway_similarity(
         )
     return pd.DataFrame(results)
 
+
+def top_genes_per_program(
+    gene_program_df: pd.DataFrame,
+    *,
+    top_n: int = 100,
+    gene_columns: Iterable[str] | None = None,
+) -> Dict[str, List[str]]:
+    """Return the most informative genes for each gene program.
+
+    Parameters
+    ----------
+    gene_program_df:
+        DataFrame produced by :func:`build_gene_program_matrix` with gene weights.
+    top_n:
+        Number of genes to retain per program based on absolute weight.
+    gene_columns:
+        Optional list of columns representing gene weights. If ``None``, all
+        columns except ``upsilon`` are used.
+
+    Returns
+    -------
+    Dict[str, List[str]]
+        Mapping of program name to list of selected genes.
+    """
+    if gene_columns is None:
+        gene_columns = [c for c in gene_program_df.columns if c != "upsilon"]
+
+    top_genes: Dict[str, List[str]] = {}
+    for program in gene_program_df.index:
+        weights = gene_program_df.loc[program, gene_columns].abs()
+        genes = list(weights.sort_values(ascending=False).head(top_n).index)
+        top_genes[program] = genes
+
+    return top_genes
+
+
+def hypergeometric_enrichment(
+    group_genes: Iterable[str],
+    program_genes: Iterable[str],
+    background_genes: Iterable[str],
+) -> float:
+    """Return hypergeometric p-value of overlap between two gene sets."""
+    background_genes = set(background_genes)
+    group_genes = set(group_genes) & background_genes
+    program_genes = set(program_genes) & background_genes
+
+    overlap = len(group_genes & program_genes)
+    M = len(background_genes)
+    n = len(program_genes)
+    N = len(group_genes)
+    from scipy.stats import hypergeom
+
+    return float(hypergeom.sf(overlap - 1, M, n, N))
+
+
+def gene_program_enrichment(
+    groups: Dict[str, Iterable[str]],
+    program_gene_sets: Dict[str, Iterable[str]],
+    background_genes: Iterable[str],
+) -> pd.DataFrame:
+    """Compute enrichment of each program within provided gene groups."""
+    records = []
+    bg = set(background_genes)
+    for group_name, genes in groups.items():
+        for program_name, program_genes in program_gene_sets.items():
+            pval = hypergeometric_enrichment(genes, program_genes, bg)
+            overlap = len(set(genes) & set(program_genes))
+            records.append(
+                {
+                    "Group": group_name,
+                    "Program": program_name,
+                    "Overlap": overlap,
+                    "PValue": pval,
+                }
+            )
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+
+    # Benjamini-Hochberg FDR
+    df = df.sort_values("PValue").reset_index(drop=True)
+    n = len(df)
+    bh_values = []
+    prev_q = 1.0
+    for i, p in enumerate(df["PValue"], 1):
+        q = min(prev_q, p * n / i)
+        bh_values.append(q)
+        prev_q = q
+    df["FDR"] = bh_values
+    return df
+
