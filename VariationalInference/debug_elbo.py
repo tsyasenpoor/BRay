@@ -184,7 +184,8 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
             )
             
             E_log_p_gamma = -0.5 * jnp.sum(E_gamma**2) / sigma**2
-            E_log_p_upsilon = -0.5 * jnp.sum(E_upsilon**2) / tau**2
+            # Laplace prior on upsilon for sparsity
+            E_log_p_upsilon = -jnp.sum(jnp.abs(E_upsilon)) / tau - E_upsilon.size * jnp.log(2 * tau)
             
             # Variational distributions
             alpha_eta = q_params['alpha_eta']

@@ -107,7 +107,8 @@ def neg_logpost_upsilon(upsilon, theta, y, tau, offset=1e-15):
     z = jnp.dot(theta, upsilon)  
     p = jax.nn.sigmoid(z)
     log_lik = jnp.sum(y * jnp.log(p + offset) + (1 - y) * jnp.log(1 - p + offset))
-    log_prior = -0.5 * jnp.sum(upsilon**2) / (tau**2)
+    # Use a Laplace prior to encourage sparsity
+    log_prior = -jnp.sum(jnp.abs(upsilon)) / tau - upsilon.size * jnp.log(2 * tau)
     return - (log_lik + log_prior)
 
 def make_upsilon_grad_and_hess(theta, y, tau):
@@ -383,7 +384,8 @@ def compute_elbo(E_eta, E_beta, E_xi, E_theta, E_gamma, E_upsilon,
     if jnp.isnan(E_log_p_gamma):
         print("WARNING: E_log_p_gamma is NaN!")
     
-    E_log_p_upsilon = -0.5 * jnp.sum(E_upsilon**2) / tau**2
+    # Laplace prior encourages sparsity in upsilon
+    E_log_p_upsilon = -jnp.sum(jnp.abs(E_upsilon)) / tau - E_upsilon.size * jnp.log(2 * tau)
     print(f"E_log_p_upsilon: {E_log_p_upsilon:.6e}")
     if jnp.isnan(E_log_p_upsilon):
         print("WARNING: E_log_p_upsilon is NaN!")
