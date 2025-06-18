@@ -318,11 +318,19 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     elbo_p_theta = jnp.sum(hp['a'] * E_log_xi[:, None] - jsp.special.gammaln(hp['a']) + \
                          (hp['a'] - 1) * E_log_theta - E_xi[:, None] * E_theta)
 
-    log_phi_unnormalized = E_log_theta[:, None, :] + E_log_beta[None, :, :]
-    phi = jax.nn.softmax(log_phi_unnormalized, axis=2)
-    E_z = x_data[..., None] * phi
-    
-    elbo_p_x = jnp.sum(E_z * (E_log_theta[:, None, :] + E_log_beta[None, :, :])) - jnp.sum(E_theta @ E_beta.T)
+    # Compute elbo_p_x in mini-batches to avoid constructing a large phi tensor
+    batch_size = max(1, min(100, x_data.shape[0] // 10))
+    elbo_p_x = 0.0
+    for batch_start in range(0, x_data.shape[0], batch_size):
+        batch_end = min(batch_start + batch_size, x_data.shape[0])
+        x_batch = x_data[batch_start:batch_end]
+        E_log_theta_batch = E_log_theta[batch_start:batch_end]
+        log_phi_unnorm = E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]
+        phi_batch = jax.nn.softmax(log_phi_unnorm, axis=2)
+        E_z_batch = x_batch[..., None] * phi_batch
+        elbo_p_x += jnp.sum(E_z_batch * (E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]))
+
+    elbo_p_x -= jnp.sum(E_theta @ E_beta.T)
 
     elbo_p_gamma = -0.5 * jnp.sum(E_gamma_sq) / hp['sigma']**2
 
