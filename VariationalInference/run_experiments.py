@@ -98,69 +98,80 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
             test_split_size = 0.15
             val_split_size = 0.15
             
-            results = run_model_and_evaluate(
-                x_data=X,
-                x_aux=x_aux,
-                y_data=Y,
-                var_names=var_names,
-                hyperparams=hyperparams,
-                seed=seed,
-                test_size=test_split_size,
-                val_size=val_split_size,
-                max_iters=max_iter,
-                return_probs=True,
-                sample_ids=sample_ids,
-                mask=mask,
-                scores=scores,
-                return_params=True
-            )
-            
-            if "train_results_df" in results:
-                train_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_train_results.csv.gz")
-                val_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_val_results.csv.gz")
-                test_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_test_results.csv.gz")
-                results["train_results_df"].to_csv(train_csv_path, index=False, compression='gzip')
-                if "val_results_df" in results:
-                    results["val_results_df"].to_csv(val_csv_path, index=False, compression='gzip')
-                results["test_results_df"].to_csv(test_csv_path, index=False, compression='gzip')
-                
-                train_df = results.pop("train_results_df")
-                val_df = results.pop("val_results_df", None)
-                test_df = results.pop("test_results_df")
-                
-            main_results = results.copy()
-            if "alpha_beta" in main_results:
-                del main_results["alpha_beta"]
-            if "omega_beta" in main_results:
-                del main_results["omega_beta"]
-            if "top_genes" in main_results:
-                del main_results["top_genes"]
-            
-            results_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_results_with_scores.json.gz")
-            with gzip.open(results_json_path, "wt", encoding="utf-8") as f:
-                json.dump(main_results, f, indent=2)
-                
-            if mask is not None:
-                pathway_results = create_pathway_results(results, var_names, mask, pathway_names)
-                pathway_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_pathway_results.json.gz")
-                with gzip.open(pathway_json_path, "wt", encoding="utf-8") as f:
-                    json.dump(pathway_results, f, indent=2)
-                print(f"Saved pathway-specific results to {pathway_json_path}")
-            else:
-                gene_program_results = create_gene_program_results(results, var_names)
-                gp_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_gene_program_results.json.gz")
-                with gzip.open(gp_json_path, "wt", encoding="utf-8") as f:
-                    json.dump(gene_program_results, f, indent=2)
-                print(f"Saved complete gene program results to {gp_json_path}")
+            try:
+                results = run_model_and_evaluate(
+                    x_data=X,
+                    x_aux=x_aux,
+                    y_data=Y,
+                    var_names=var_names,
+                    hyperparams=hyperparams,
+                    seed=seed,
+                    test_size=test_split_size,
+                    val_size=val_split_size,
+                    max_iters=max_iter,
+                    return_probs=True,
+                    sample_ids=sample_ids,
+                    mask=mask,
+                    scores=scores,
+                    return_params=True
+                )
 
-            if "train_results_df" not in results and locals().get('train_df') is not None:
-                results["train_results_df"] = train_df
-                if locals().get('val_df') is not None:
-                    results["val_results_df"] = val_df
-                results["test_results_df"] = test_df
-
-            all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
+                if "error" in results:
+                    print(f"Skipping post-processing for d={d} due to training error.")
+                    all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
+                    continue 
             
+                if "train_results_df" in results:
+                    train_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_train_results.csv.gz")
+                    val_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_val_results.csv.gz")
+                    test_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_test_results.csv.gz")
+                    results["train_results_df"].to_csv(train_csv_path, index=False, compression='gzip')
+                    if "val_results_df" in results:
+                        results["val_results_df"].to_csv(val_csv_path, index=False, compression='gzip')
+                    results["test_results_df"].to_csv(test_csv_path, index=False, compression='gzip')
+                    
+                    train_df = results.pop("train_results_df")
+                    val_df = results.pop("val_results_df", None)
+                    test_df = results.pop("test_results_df")
+                    
+                main_results = results.copy()
+                if "alpha_beta" in main_results:
+                    del main_results["alpha_beta"]
+                if "omega_beta" in main_results:
+                    del main_results["omega_beta"]
+                if "top_genes" in main_results:
+                    del main_results["top_genes"]
+                
+                results_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_results_with_scores.json.gz")
+                with gzip.open(results_json_path, "wt", encoding="utf-8") as f:
+                    json.dump(main_results, f, indent=2)
+                    
+                if mask is not None:
+                    pathway_results = create_pathway_results(results, var_names, mask, pathway_names)
+                    pathway_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_pathway_results.json.gz")
+                    with gzip.open(pathway_json_path, "wt", encoding="utf-8") as f:
+                        json.dump(pathway_results, f, indent=2)
+                    print(f"Saved pathway-specific results to {pathway_json_path}")
+                else:
+                    gene_program_results = create_gene_program_results(results, var_names)
+                    gp_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_gene_program_results.json.gz")
+                    with gzip.open(gp_json_path, "wt", encoding="utf-8") as f:
+                        json.dump(gene_program_results, f, indent=2)
+                    print(f"Saved complete gene program results to {gp_json_path}")
+
+                if "train_results_df" not in results and locals().get('train_df') is not None:
+                    results["train_results_df"] = train_df
+                    if locals().get('val_df') is not None:
+                        results["val_results_df"] = val_df
+                    results["test_results_df"] = test_df
+
+                all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
+            except Exception as e:
+                print(f"--- UNHANDLED EXCEPTION for d={d} ---")
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+                all_results[f"{dataset_name}_{label_col}_d_{d}"] = {"error": str(e), "status": "crashed"}
             clear_memory()
 
     return all_results
@@ -359,59 +370,68 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
     plot_prefix = os.path.join(exp_output_dir, plot_prefix_basename)
     
     clear_memory()
-    results = run_model_and_evaluate(
-        x_data=X,
-        x_aux=x_aux,
-        y_data=Y,
-        var_names=var_names,
-        hyperparams=hyperparams,
-        seed=seed,
-        test_size=0.15,
-        val_size=0.15,
-        max_iters=max_iter,
-        return_probs=True,
-        sample_ids=sample_ids,
-        mask=extended_mask,
-        scores=scores,
-        return_params=True,
-        plot_elbo=True,
-        plot_prefix=plot_prefix
-    )
-    
-    if "train_results_df" in results:
-        train_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_train_results.csv.gz"
-        val_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_val_results.csv.gz"
-        test_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_test_results.csv.gz"
-        results["train_results_df"].to_csv(os.path.join(exp_output_dir, train_csv_filename), index=False, compression='gzip')
-        if "val_results_df" in results:
-            results["val_results_df"].to_csv(os.path.join(exp_output_dir, val_csv_filename), index=False, compression='gzip')
-        results["test_results_df"].to_csv(os.path.join(exp_output_dir, test_csv_filename), index=False, compression='gzip')
+    try:
+        results = run_model_and_evaluate(
+            x_data=X,
+            x_aux=x_aux,
+            y_data=Y,
+            var_names=var_names,
+            hyperparams=hyperparams,
+            seed=seed,
+            test_size=0.15,
+            val_size=0.15,
+            max_iters=max_iter,
+            return_probs=True,
+            sample_ids=sample_ids,
+            mask=extended_mask,
+            scores=scores,
+            return_params=True,
+            plot_elbo=True,
+            plot_prefix=plot_prefix
+        )
         
-        train_df = results.pop("train_results_df")
-        val_df = results.pop("val_results_df", None)
-        test_df = results.pop("test_results_df")
-    
-    main_results = results.copy()
-    for large_field in ["alpha_beta", "omega_beta", "E_beta"]:
-        if large_field in main_results:
-            del main_results[large_field]
-    
-    results_json_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_results.json.gz"
-    out_path = os.path.join(exp_output_dir, results_json_filename)
-    with gzip.open(out_path, "wt", encoding="utf-8") as f:
-        json.dump(main_results, f, indent=2)
-    
-    extended_pathway_names = pathway_names.copy() if pathway_names else [f"pathway_{i+1}" for i in range(n_pathways)]
-    extended_pathway_names.extend([f"gene_program_{i+1}" for i in range(n_gp)])
-    
-    combined_analysis_results = create_pathway_results(results, var_names, extended_mask, extended_pathway_names)
-    combined_analysis_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_analysis.json.gz" # Renamed for clarity
-    combined_analysis_path = os.path.join(exp_output_dir, combined_analysis_filename)
-    with gzip.open(combined_analysis_path, "wt", encoding="utf-8") as f:
-        json.dump(combined_analysis_results, f, indent=2)
-    
-    print(f"Saved combined model results to {exp_output_dir}")
-    return results
+        if "train_results_df" in results:
+            train_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_train_results.csv.gz"
+            val_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_val_results.csv.gz"
+            test_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_test_results.csv.gz"
+            results["train_results_df"].to_csv(os.path.join(exp_output_dir, train_csv_filename), index=False, compression='gzip')
+            if "val_results_df" in results:
+                results["val_results_df"].to_csv(os.path.join(exp_output_dir, val_csv_filename), index=False, compression='gzip')
+            results["test_results_df"].to_csv(os.path.join(exp_output_dir, test_csv_filename), index=False, compression='gzip')
+            
+            train_df = results.pop("train_results_df")
+            val_df = results.pop("val_results_df", None)
+            test_df = results.pop("test_results_df")
+        
+        main_results = results.copy()
+        for large_field in ["alpha_beta", "omega_beta", "E_beta"]:
+            if large_field in main_results:
+                del main_results[large_field]
+        
+        results_json_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_results.json.gz"
+        out_path = os.path.join(exp_output_dir, results_json_filename)
+        with gzip.open(out_path, "wt", encoding="utf-8") as f:
+            json.dump(main_results, f, indent=2)
+        
+        extended_pathway_names = pathway_names.copy() if pathway_names else [f"pathway_{i+1}" for i in range(n_pathways)]
+        extended_pathway_names.extend([f"gene_program_{i+1}" for i in range(n_gp)])
+        
+        combined_analysis_results = create_pathway_results(results, var_names, extended_mask, extended_pathway_names)
+        combined_analysis_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_analysis.json.gz" # Renamed for clarity
+        combined_analysis_path = os.path.join(exp_output_dir, combined_analysis_filename)
+        with gzip.open(combined_analysis_path, "wt", encoding="utf-8") as f:
+            json.dump(combined_analysis_results, f, indent=2)
+        
+        print(f"Saved combined model results to {exp_output_dir}")
+
+    except Exception as e:
+        print(f"--- UNHANDLED EXCEPTION in combined experiment ---")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        results = {"error": str(e), "status": "crashed"}
+        
+        return results
 
 def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pathway_names,
                                 output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/pathway_initiated",

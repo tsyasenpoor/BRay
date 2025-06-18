@@ -27,8 +27,8 @@ jax.config.update('jax_platform_name', 'cpu')
 
 # Add this at the top of your file, outside any function
 @jax.jit
-def process_phi_batch(theta_batch, beta, x_batch):
-    log_phi_unnormalized = jnp.einsum('bd,pd->bpd', jnp.log(jnp.maximum(theta_batch, 1e-10)), jnp.log(jnp.maximum(beta, 1e-10)))
+def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
+    log_phi_unnormalized = E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]
     phi_batch = jax.nn.softmax(log_phi_unnormalized, axis=2)
     
     alpha_beta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=0)
@@ -97,7 +97,7 @@ def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old,
     return mu_gamma_new, Sigma_gamma_new, mu_upsilon_new, Sigma_upsilon_new, gig_b_ups_new
 
 
-def initialize_q_params(n, p, kappa, p_aux, d, seed=None, beta_init=None):
+def initialize_q_params(n, p, kappa, p_aux, d, hyperparams, seed=None, beta_init=None):
     log_memory(f"Before initialize_q_params (n={n}, p={p}, kappa={kappa}, p_aux={p_aux}, d={d})")
     
     if seed is None:
@@ -106,7 +106,7 @@ def initialize_q_params(n, p, kappa, p_aux, d, seed=None, beta_init=None):
     else:
         key = jax.random.PRNGKey(seed)
 
-    k1, k2, k3, k4, k5, k6 = jax.random.split(key, 8)
+    k1, k2, k3, k4, k5, k6= jax.random.split(key, 6)
     
     alpha_eta= jnp.ones(p)+ 0.01 * jax.random.normal(k1, (p,))
     
@@ -182,15 +182,15 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     mu_upsilon_old, Sigma_upsilon_old = q_params['mu_upsilon'], q_params['Sigma_upsilon']
     gig_a_ups, gig_b_ups_old = q_params['gig_a_ups'], q_params['gig_b_ups']
 
-    E_theta_old = alpha_theta_old / jnp.maximum(omega_theta_old, 1e-10)
-    E_beta_old = alpha_beta_old / jnp.maximum(omega_beta_old, 1e-10)
+    E_log_theta_old = jsp.special.digamma(alpha_theta_old) - jnp.log(jnp.maximum(omega_theta_old, 1e-10))
+    E_log_beta_old = jsp.special.digamma(alpha_beta_old) - jnp.log(jnp.maximum(omega_beta_old, 1e-10))
     if using_mask:
-        E_beta_old = E_beta_old * mask
+        E_log_beta_old = E_log_beta_old * mask
 
     print("Updating regression parameters (gamma, upsilon)...")
     
     var_theta_old = alpha_theta_old / jnp.maximum(omega_theta_old**2, 1e-10)
-    E_theta_theta_T = jnp.einsum('ni,nj->nij', E_theta_old, E_theta_old) + \
+    E_theta_theta_T = jnp.einsum('ni,nj->nij', E_log_theta_old, E_log_theta_old) + \
                       jnp.einsum('ni,ij->nij', var_theta_old, jnp.eye(d))
 
     (mu_gamma_new, Sigma_gamma_new, 
@@ -198,7 +198,7 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
      gig_b_ups_new) = update_regression_variational(
         mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
         gig_a_ups, gig_b_ups_old,
-        y_data, x_aux, hyperparams, E_theta_old, E_theta_theta_T
+        y_data, x_aux, hyperparams, E_log_theta_old, E_theta_theta_T
     )
 
     print("Updating latent counts (phi) and alpha parameters...")
@@ -211,11 +211,11 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     
     for batch_start in range(0, n, batch_size):
         batch_end = min(batch_start + batch_size, n)
-        E_theta_batch = E_theta_old[batch_start:batch_end]
+        E_log_theta_batch = E_log_theta_old[batch_start:batch_end]
         x_data_batch = x_data[batch_start:batch_end]
         
         alpha_beta_batch_update, alpha_theta_batch_update = process_phi_batch(
-            E_theta_batch, E_beta_old, x_data_batch
+            E_log_theta_batch, E_log_beta_old, x_data_batch
         )
         alpha_beta_new += alpha_beta_batch_update
         alpha_theta_from_data = alpha_theta_from_data.at[batch_start:batch_end].set(alpha_theta_batch_update)
@@ -228,12 +228,12 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     print("Updating rate (omega) and hyperprior (eta, xi) parameters...")
     
     E_eta_old = alpha_eta_old / jnp.maximum(omega_eta_old, 1e-10)
-    sum_E_theta_old = jnp.sum(E_theta_old, axis=0)
+    sum_E_theta_old = jnp.sum(E_log_theta_old, axis=0)
     omega_beta_new = E_eta_old[:, None] + sum_E_theta_old[None, :]
     omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e3)
 
     E_xi_old = alpha_xi_old / jnp.maximum(omega_xi_old, 1e-10)
-    sum_E_beta_old = jnp.sum(E_beta_old, axis=0) # Sum over genes
+    sum_E_beta_old = jnp.sum(E_log_beta_old, axis=0) # Sum over genes
     omega_theta_new = E_xi_old[:, None] + sum_E_beta_old[None, :]
     omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e3)
     
@@ -421,7 +421,7 @@ def run_variational_inference(x_data, y_data, x_aux, hyperparams,
         kappa = y_data.shape[1]
         p_aux = x_aux.shape[1]
         d = hyperparams['d']
-        q_params = initialize_q_params(n, p, kappa, p_aux, d, hyperparams, beta_init=beta_init)
+        q_params = initialize_q_params(n, p, kappa, p_aux, d, hyperparams, seed=seed, beta_init=beta_init)
 
     elbo_history = []
     old_elbo = -jnp.inf
