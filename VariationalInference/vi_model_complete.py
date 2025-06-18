@@ -374,8 +374,18 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     H_xi = jnp.sum(alpha_xi - jnp.log(omega_xi) + jsp.special.gammaln(alpha_xi) + (1 - alpha_xi) * jsp.special.digamma(alpha_xi))
     H_theta = jnp.sum(alpha_theta - jnp.log(omega_theta) + jsp.special.gammaln(alpha_theta) + (1 - alpha_theta) * jsp.special.digamma(alpha_theta))
     
-    H_gamma = 0.5 * jnp.sum([jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1] for S in Sigma_gamma])
-    H_upsilon = 0.5 * jnp.sum([jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1] for S in Sigma_upsilon])
+    # jnp.sum does not accept Python lists directly, so convert the lists of
+    # log-determinants to JAX arrays before summing. This avoids the
+    # ``TypeError: sum requires ndarray or scalar arguments`` that was observed
+    # during training.
+    H_gamma = 0.5 * jnp.sum(
+        jnp.array([jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1]
+                   for S in Sigma_gamma])
+    )
+    H_upsilon = 0.5 * jnp.sum(
+        jnp.array([jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1]
+                   for S in Sigma_upsilon])
+    )
 
     
     sqrt_ab_np = np.array(jnp.sqrt(gig_a * gig_b))
