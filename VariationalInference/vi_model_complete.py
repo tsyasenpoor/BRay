@@ -35,8 +35,8 @@ def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
     alpha_theta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=1)
     return alpha_beta_batch_update, alpha_theta_batch_update
 
-@partial(jax.jit, static_argnums=(3,)) 
-def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old, 
+@jax.jit
+def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
                                   gig_a_ups, gig_b_ups_old,
                                   y_data, x_aux, hyperparams, E_theta, E_theta_theta_T):
     
