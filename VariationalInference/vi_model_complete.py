@@ -35,8 +35,8 @@ def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
     alpha_theta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=1)
     return alpha_beta_batch_update, alpha_theta_batch_update
 
-@partial(jax.jit, static_argnums=(3,)) 
-def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old, 
+@jax.jit
+def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
                                   gig_a_ups, gig_b_ups_old,
                                   y_data, x_aux, hyperparams, E_theta, E_theta_theta_T):
     
@@ -53,7 +53,8 @@ def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old,
 
     zeta_sq = jnp.zeros((n, kappa))
     for k in range(kappa):
-        term1 = jnp.einsum('ii', E_theta_theta_T @ E_upsilon_upsilon_T[k])
+        # Trace over the last two dimensions for each sample
+        term1 = jnp.einsum('nij,ij->n', E_theta_theta_T, E_upsilon_upsilon_T[k])
         term2 = jnp.einsum('ij,ji->i', x_aux @ E_gamma_gamma_T[k], x_aux.T)
         term3 = 2 * (E_theta @ E_upsilon[k]) * (x_aux @ E_gamma[k])
         zeta_sq = zeta_sq.at[:, k].set(term1 + term2 + term3)
@@ -340,7 +341,8 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 
     zeta_sq = jnp.zeros((n, kappa))
     for k in range(kappa):
-        term1 = jnp.einsum('ii', E_theta_theta_T @ E_upsilon_upsilon_T[k])
+        # Trace over the last two dimensions for each sample
+        term1 = jnp.einsum('nij,ij->n', E_theta_theta_T, E_upsilon_upsilon_T[k])
         term2 = jnp.einsum('ij,ji->i', x_aux @ E_gamma_gamma_T[k], x_aux.T)
         term3 = 2 * (E_theta @ E_upsilon[k]) * (x_aux @ E_gamma[k])
         zeta_sq = zeta_sq.at[:, k].set(term1 + term2 + term3)
@@ -401,7 +403,8 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 def run_variational_inference(x_data, y_data, x_aux, hyperparams,
                               q_params=None, max_iters=100, tol=1e-6,
                               verbose=True, mask=None,
-                              patience=5, min_delta=1e-3, beta_init=None):
+                              patience=5, min_delta=1e-3, beta_init=None,
+                              seed=None):
     
     # --- SETUP (largely the same) ---
     if hasattr(x_data, 'toarray'):
@@ -774,7 +777,8 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
             X_train, y_train, XA_train, hyperparams,
             q_params=None, max_iters=max_iters, verbose=True,
             mask=mask, patience=5, min_delta=1e-3,
-            beta_init=beta_init
+            beta_init=beta_init,
+            seed=seed
         )
         
         convergence_info = q_params.get('convergence_info', {})

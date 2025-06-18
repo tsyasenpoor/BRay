@@ -249,7 +249,7 @@ def run_synthetic_data_test(n_samples=200, n_genes=100, n_programs=10, p_aux=1,
     
     print("Initializing variational parameters...")
     q_params = initialize_q_params(n_samples, n_genes, 1, p_aux, n_programs, seed=seed)
-    
+
     print("Running variational inference...")
     q_params_final, elbo_history = run_variational_inference(
         x_data=x_data,
@@ -259,7 +259,8 @@ def run_synthetic_data_test(n_samples=200, n_genes=100, n_programs=10, p_aux=1,
         q_params=q_params,
         max_iters=max_iters,
         tol=tol,
-        verbose=True
+        verbose=True,
+        seed=seed
     )
     
     print("Comparing true vs. inferred parameters...")
