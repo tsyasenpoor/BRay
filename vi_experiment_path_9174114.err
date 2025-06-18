@@ -1,5 +1,0 @@
-/home/FCAM/tyasenpoor/miniconda3/envs/bray_cpu/lib/python3.11/site-packages/anndata/_core/anndata.py:1756: UserWarning: Observation names are not unique. To make them unique, call `.obs_names_make_unique`.
-  utils.warn_names_duplicates("obs")
-/home/FCAM/tyasenpoor/miniconda3/envs/bray_cpu/lib/python3.11/site-packages/anndata/_core/anndata.py:1756: UserWarning: Observation names are not unique. To make them unique, call `.obs_names_make_unique`.
-  utils.warn_names_duplicates("obs")
-slurmstepd: error: *** JOB 9174114 ON xanadu-70 CANCELLED AT 2025-06-16T07:51:01 ***
