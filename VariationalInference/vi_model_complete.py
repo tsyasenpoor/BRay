@@ -38,7 +38,7 @@ def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
 @jax.jit
 def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
                                   gig_a_ups, gig_b_ups_old,
-                                  y_data, x_aux, hyperparams, E_theta, E_theta_theta_T):
+                                  y_data, x_aux, hyperparams, E_theta, var_theta):
     
     
     sigma_sq = hyperparams['sigma']**2
@@ -53,8 +53,9 @@ def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old,
 
     zeta_sq = jnp.zeros((n, kappa))
     for k in range(kappa):
-        # Trace over the last two dimensions for each sample
-        term1 = jnp.einsum('nij,ij->n', E_theta_theta_T, E_upsilon_upsilon_T[k])
+        diag_k = jnp.diag(E_upsilon_upsilon_T[k])
+        term1 = jnp.einsum('ni,ij,nj->n', E_theta, E_upsilon_upsilon_T[k], E_theta)
+        term1 += jnp.dot(var_theta, diag_k)
         term2 = jnp.einsum('ij,ji->i', x_aux @ E_gamma_gamma_T[k], x_aux.T)
         term3 = 2 * (E_theta @ E_upsilon[k]) * (x_aux @ E_gamma[k])
         zeta_sq = zeta_sq.at[:, k].set(term1 + term2 + term3)
@@ -191,15 +192,13 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     print("Updating regression parameters (gamma, upsilon)...")
     
     var_theta_old = alpha_theta_old / jnp.maximum(omega_theta_old**2, 1e-10)
-    E_theta_theta_T = jnp.einsum('ni,nj->nij', E_log_theta_old, E_log_theta_old) + \
-                      jnp.einsum('ni,ij->nij', var_theta_old, jnp.eye(d))
 
-    (mu_gamma_new, Sigma_gamma_new, 
-     mu_upsilon_new, Sigma_upsilon_new, 
+    (mu_gamma_new, Sigma_gamma_new,
+     mu_upsilon_new, Sigma_upsilon_new,
      gig_b_ups_new) = update_regression_variational(
         mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
         gig_a_ups, gig_b_ups_old,
-        y_data, x_aux, hyperparams, E_log_theta_old, E_theta_theta_T
+        y_data, x_aux, hyperparams, E_log_theta_old, var_theta_old
     )
 
     print("Updating latent counts (phi) and alpha parameters...")
@@ -319,11 +318,19 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     elbo_p_theta = jnp.sum(hp['a'] * E_log_xi[:, None] - jsp.special.gammaln(hp['a']) + \
                          (hp['a'] - 1) * E_log_theta - E_xi[:, None] * E_theta)
 
-    log_phi_unnormalized = E_log_theta[:, None, :] + E_log_beta[None, :, :]
-    phi = jax.nn.softmax(log_phi_unnormalized, axis=2)
-    E_z = x_data[..., None] * phi
-    
-    elbo_p_x = jnp.sum(E_z * (E_log_theta[:, None, :] + E_log_beta[None, :, :])) - jnp.sum(E_theta @ E_beta.T)
+    # Compute elbo_p_x in mini-batches to avoid constructing a large phi tensor
+    batch_size = max(1, min(100, x_data.shape[0] // 10))
+    elbo_p_x = 0.0
+    for batch_start in range(0, x_data.shape[0], batch_size):
+        batch_end = min(batch_start + batch_size, x_data.shape[0])
+        x_batch = x_data[batch_start:batch_end]
+        E_log_theta_batch = E_log_theta[batch_start:batch_end]
+        log_phi_unnorm = E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]
+        phi_batch = jax.nn.softmax(log_phi_unnorm, axis=2)
+        E_z_batch = x_batch[..., None] * phi_batch
+        elbo_p_x += jnp.sum(E_z_batch * (E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]))
+
+    elbo_p_x -= jnp.sum(E_theta @ E_beta.T)
 
     elbo_p_gamma = -0.5 * jnp.sum(E_gamma_sq) / hp['sigma']**2
 
@@ -336,13 +343,14 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     mu_upsilon_old, Sigma_upsilon_old = q_params['mu_upsilon'], q_params['Sigma_upsilon']
     E_gamma_gamma_T = jnp.array([S + jnp.outer(m, m) for m, S in zip(mu_gamma_old, Sigma_gamma_old)])
     E_upsilon_upsilon_T = jnp.array([S + jnp.outer(m, m) for m, S in zip(mu_upsilon_old, Sigma_upsilon_old)])
-    E_theta_theta_T = jnp.einsum('ni,nj->nij', E_theta, E_theta) + jnp.einsum('ni,ij->nij', (alpha_theta / omega_theta**2), jnp.eye(d))
+    var_theta = alpha_theta / jnp.maximum(omega_theta**2, 1e-10)
     n, kappa = y_data.shape
 
     zeta_sq = jnp.zeros((n, kappa))
     for k in range(kappa):
-        # Trace over the last two dimensions for each sample
-        term1 = jnp.einsum('nij,ij->n', E_theta_theta_T, E_upsilon_upsilon_T[k])
+        diag_k = jnp.diag(E_upsilon_upsilon_T[k])
+        term1 = jnp.einsum('ni,ij,nj->n', E_theta, E_upsilon_upsilon_T[k], E_theta)
+        term1 += jnp.dot(var_theta, diag_k)
         term2 = jnp.einsum('ij,ji->i', x_aux @ E_gamma_gamma_T[k], x_aux.T)
         term3 = 2 * (E_theta @ E_upsilon[k]) * (x_aux @ E_gamma[k])
         zeta_sq = zeta_sq.at[:, k].set(term1 + term2 + term3)
