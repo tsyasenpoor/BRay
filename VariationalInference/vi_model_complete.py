@@ -383,8 +383,22 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 
     
     sqrt_ab_np = np.array(jnp.sqrt(gig_a * gig_b))
-    log_bessel_ratio = np.log(kv(gig_p + 1, sqrt_ab_np)) - np.log(kv(gig_p, sqrt_ab_np))
-    H_lambda_sq = jnp.sum(jnp.log(2*gig_b/gig_a)/2 + jsp.special.gammaln(gig_p) - (gig_p-1)*log_bessel_ratio + sqrt_ab_np * (kv(gig_p+1, sqrt_ab_np)/kv(gig_p, sqrt_ab_np)))
+
+    def safe_bessel_ratio(nu, x, thresh=50):
+        """Compute K_{nu+1}(x)/K_{nu}(x) with protection against underflow."""
+        x = np.asarray(x)
+        ratio = kv(nu + 1, x) / np.maximum(kv(nu, x), 1e-300)
+        ratio = np.where(x > thresh, 1.0, ratio)
+        return ratio
+
+    bessel_ratio = safe_bessel_ratio(gig_p, sqrt_ab_np)
+    log_bessel_ratio = np.log(bessel_ratio)
+    H_lambda_sq = jnp.sum(
+        jnp.log(2 * gig_b / gig_a) / 2
+        + jsp.special.gammaln(gig_p)
+        - (gig_p - 1) * log_bessel_ratio
+        + sqrt_ab_np * bessel_ratio
+    )
 
     entropy = H_eta + H_beta + H_xi + H_theta + H_gamma + H_upsilon + H_lambda_sq
     
