@@ -113,10 +113,13 @@ def initialize_q_params(n, p, kappa, p_aux, d, hyperparams, seed=None, beta_init
     # Initialize alpha_beta and omega_beta from beta_init if provided
     if beta_init is not None:
         print(f"Initializing alpha_beta from provided beta_init with shape {beta_init.shape}")
-        # Use beta_init as the expected value of beta, so alpha_beta/omega_beta = beta_init
-        # Set omega_beta to ones and alpha_beta to beta_init
+        # Use beta_init as the expected value of beta. To avoid zero values (which
+        # lead to NaNs in digamma/gammaln), clip the initialization to a small
+        # positive value.
         omega_beta = jnp.ones((p, d))
-        alpha_beta = beta_init * omega_beta  # This ensures E[beta] = alpha_beta/omega_beta = beta_init
+        beta_init = jnp.array(beta_init)
+        beta_init = jnp.maximum(beta_init, 1e-2)
+        alpha_beta = beta_init * omega_beta  # Ensures E[beta] = beta_init (clipped)
     else:
         alpha_beta  = jnp.ones((p, d)) + 0.01 * jax.random.normal(k2, (p, d))
         omega_beta  = jnp.ones((p, d))
