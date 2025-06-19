@@ -299,6 +299,12 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     E_gamma, E_upsilon = mu_gamma, mu_upsilon
     E_gamma_sq = jnp.array([jnp.diag(S) + m**2 for m, S in zip(mu_gamma, Sigma_gamma)])
     E_upsilon_sq = jnp.array([jnp.diag(S) + m**2 for m, S in zip(mu_upsilon, Sigma_upsilon)])
+
+    print(
+        f"E_theta range: {jnp.min(E_theta):.4e} to {jnp.max(E_theta):.4e}, "
+        f"E_gamma range: {jnp.min(E_gamma):.4e} to {jnp.max(E_gamma):.4e}, "
+        f"E_upsilon range: {jnp.min(E_upsilon):.4e} to {jnp.max(E_upsilon):.4e}"
+    )
     
    
     E_inv_lambda_sq = jnp.sqrt(gig_a / jnp.maximum(gig_b, 1e-10))
@@ -357,9 +363,20 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     zeta = jnp.sqrt(jnp.maximum(zeta_sq, 1e-10))
     lambda_zeta = jnp.tanh(zeta / 2) / jnp.maximum(4 * zeta, 1e-10)
     lambda_zeta = jnp.where(zeta < 1e-5, 1/8.0, lambda_zeta)
+
+    # Debugging information to diagnose numerical issues
+    print(
+        f"zeta range: {jnp.min(zeta):.4e} to {jnp.max(zeta):.4e}, "
+        f"lambda_zeta range: {jnp.min(lambda_zeta):.4e} to {jnp.max(lambda_zeta):.4e}"
+    )
     
     E_A = (E_theta @ E_upsilon.T) + (x_aux @ E_gamma.T)
     E_A_sq = zeta_sq
+
+    print(
+        f"E_A range: {jnp.min(E_A):.4e} to {jnp.max(E_A):.4e}, "
+        f"E_A_sq range: {jnp.min(E_A_sq):.4e} to {jnp.max(E_A_sq):.4e}"
+    )
     
     elbo_p_y = jnp.sum((y_data - 0.5) * E_A - lambda_zeta * E_A_sq) # The bound itself, excluding const(zeta)
     
@@ -387,10 +404,14 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     sqrt_ab_np = np.array(jnp.sqrt(gig_a * gig_b))
 
     def safe_bessel_ratio(nu, x, thresh=50):
-        """Compute K_{nu+1}(x)/K_{nu}(x) with protection against underflow."""
-        x = np.asarray(x)
-        ratio = kv(nu + 1, x) / np.maximum(kv(nu, x), 1e-300)
+        """Compute K_{nu+1}(x)/K_{nu}(x) while avoiding numerical warnings."""
+        x = np.asarray(x, dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            kv_nu = kv(nu, x)
+            kv_nu1 = kv(nu + 1, x)
+            ratio = kv_nu1 / np.maximum(kv_nu, 1e-300)
         ratio = np.where(x > thresh, 1.0, ratio)
+        ratio = np.where(np.isfinite(ratio), ratio, 1.0)
         return ratio
 
     bessel_ratio = safe_bessel_ratio(gig_p, sqrt_ab_np)
