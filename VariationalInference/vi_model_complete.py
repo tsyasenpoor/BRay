@@ -48,53 +48,51 @@ def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old,
 
     E_gamma = mu_gamma_old
     E_upsilon = mu_upsilon_old
-    E_gamma_gamma_T = jnp.array([S + jnp.outer(m, m) for m, S in zip(E_gamma, Sigma_gamma_old)])
-    E_upsilon_upsilon_T = jnp.array([S + jnp.outer(m, m) for m, S in zip(E_upsilon, Sigma_upsilon_old)])
+    # Vectorize E[xx^T] calculations to avoid list comprehensions
+    E_gamma_gamma_T = jax.vmap(lambda m, S: S + jnp.outer(m, m))(E_gamma, Sigma_gamma_old)
+    E_upsilon_upsilon_T = jax.vmap(lambda m, S: S + jnp.outer(m, m))(E_upsilon, Sigma_upsilon_old)
 
-    zeta_sq = jnp.zeros((n, kappa))
-    for k in range(kappa):
-        diag_k = jnp.diag(E_upsilon_upsilon_T[k])
-        term1 = jnp.einsum('ni,ij,nj->n', E_theta, E_upsilon_upsilon_T[k], E_theta)
-        term1 += jnp.dot(var_theta, diag_k)
-        term2 = jnp.einsum('ij,ji->i', x_aux @ E_gamma_gamma_T[k], x_aux.T)
-        term3 = 2 * (E_theta @ E_upsilon[k]) * (x_aux @ E_gamma[k])
-        zeta_sq = zeta_sq.at[:, k].set(term1 + term2 + term3)
+    # Vectorized computation of zeta_sq, removing the Python loop over kappa
+    term1 = jnp.einsum('ni,kij,nj->nk', E_theta, E_upsilon_upsilon_T, E_theta)
+    diag_E_ups_ups_T = jnp.diagonal(E_upsilon_upsilon_T, axis1=1, axis2=2) # Shape (kappa, d)
+    term1_var = jnp.einsum('nd,kd->nk', var_theta, diag_E_ups_ups_T)
+    term2 = jnp.einsum('na,kap,np->nk', x_aux, E_gamma_gamma_T, x_aux)
+    term3 = 2 * jnp.einsum('nd,kd->nk', E_theta, E_upsilon) * jnp.einsum('na,ka->nk', x_aux, E_gamma)
+    zeta_sq = term1 + term1_var + term2 + term3
     
     zeta = jnp.sqrt(jnp.maximum(zeta_sq, 1e-10))
     lambda_zeta = jnp.tanh(zeta / 2) / jnp.maximum(4 * zeta, 1e-10)
     lambda_zeta = jnp.where(zeta < 1e-5, 1/8, lambda_zeta)
 
-    E_upsilon_sq = jnp.array([jnp.diag(S) + m**2 for m, S in zip(mu_upsilon_old, Sigma_upsilon_old)])
+    E_upsilon_sq = jax.vmap(lambda m, S: jnp.diag(S) + m**2)(mu_upsilon_old, Sigma_upsilon_old)
     gig_b_ups_new = E_upsilon_sq
     
     E_inv_lambda_sq_ups = jnp.sqrt(gig_a_ups / jnp.maximum(gig_b_ups_new, 1e-10))
 
-    mu_gamma_new = jnp.zeros_like(mu_gamma_old)
-    Sigma_gamma_new = jnp.zeros_like(Sigma_gamma_old)
-    mu_upsilon_new = jnp.zeros_like(mu_upsilon_old)
-    Sigma_upsilon_new = jnp.zeros_like(Sigma_upsilon_old)
+    # Vectorized updates for gamma, removing the loop
+    Sigma_gamma_inv_term = 2 * jnp.einsum('nk,na,nb->kab', lambda_zeta, x_aux, x_aux)
+    Sigma_gamma_inv = (jnp.eye(p_aux)[None, :, :] / sigma_sq) + Sigma_gamma_inv_term
+    
+    linear_term_gamma_1 = (y_data - 0.5).T @ x_aux
+    E_theta_E_upsilon = jnp.einsum('nd,kd->nk', E_theta, E_upsilon)
+    linear_term_gamma_2 = -2 * (lambda_zeta * E_theta_E_upsilon).T @ x_aux
+    linear_term_gamma = linear_term_gamma_1 + linear_term_gamma_2
+    
+    Sigma_gamma_new = jax.vmap(jnp.linalg.inv)(Sigma_gamma_inv + 1e-4 * jnp.eye(p_aux)[None, :, :])
+    mu_gamma_new = jnp.einsum('kab,kb->ka', Sigma_gamma_new, linear_term_gamma)
 
-    for k in range(kappa):
-        lambda_zeta_k = lambda_zeta[:, k]
-        
-        Sigma_gamma_inv_k = (1/sigma_sq) * jnp.eye(p_aux) + 2 * (x_aux.T * lambda_zeta_k) @ x_aux
-        linear_term_gamma_k = (y_data[:, k] - 0.5) @ x_aux - 2 * ((lambda_zeta_k * (E_theta @ E_upsilon[k])) @ x_aux)
-        
-        Sigma_gamma_k = jnp.linalg.inv(Sigma_gamma_inv_k + 1e-4 * jnp.eye(p_aux))
-        mu_gamma_k = Sigma_gamma_k @ linear_term_gamma_k
-        
-        mu_gamma_new = mu_gamma_new.at[k].set(mu_gamma_k)
-        Sigma_gamma_new = Sigma_gamma_new.at[k].set(Sigma_gamma_k)
+    # Vectorized updates for upsilon, removing the loop
+    prior_precision = jax.vmap(jnp.diag)(E_inv_lambda_sq_ups)
+    Sigma_upsilon_inv_term = 2 * jnp.einsum('nk,ni,nj->kij', lambda_zeta, E_theta, E_theta)
+    Sigma_upsilon_inv = Sigma_upsilon_inv_term + prior_precision
 
-        prior_precision_diag = E_inv_lambda_sq_ups[k, :]
-        Sigma_upsilon_inv_k = 2 * jnp.einsum('i,ij,ik->jk', lambda_zeta_k, E_theta, E_theta) + jnp.diag(prior_precision_diag)
-        linear_term_upsilon_k = (y_data[:, k] - 0.5) @ E_theta - 2 * (lambda_zeta_k * (x_aux @ E_gamma[k])) @ E_theta
+    linear_term_upsilon_1 = (y_data - 0.5).T @ E_theta
+    x_aux_E_gamma = jnp.einsum('na,ka->nk', x_aux, E_gamma)
+    linear_term_upsilon_2 = -2 * (lambda_zeta * x_aux_E_gamma).T @ E_theta
+    linear_term_upsilon = linear_term_upsilon_1 + linear_term_upsilon_2
 
-        Sigma_upsilon_k = jnp.linalg.inv(Sigma_upsilon_inv_k + 1e-4 * jnp.eye(d))
-        mu_upsilon_k = Sigma_upsilon_k @ linear_term_upsilon_k
-        
-        mu_upsilon_new = mu_upsilon_new.at[k].set(mu_upsilon_k)
-        Sigma_upsilon_new = Sigma_upsilon_new.at[k].set(Sigma_upsilon_k)
+    Sigma_upsilon_new = jax.vmap(jnp.linalg.inv)(Sigma_upsilon_inv + 1e-4 * jnp.eye(d)[None, :, :])
+    mu_upsilon_new = jnp.einsum('kab,kb->ka', Sigma_upsilon_new, linear_term_upsilon)
         
     return mu_gamma_new, Sigma_gamma_new, mu_upsilon_new, Sigma_upsilon_new, gig_b_ups_new
 
@@ -341,19 +339,18 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
    
     mu_gamma_old, Sigma_gamma_old = q_params['mu_gamma'], q_params['Sigma_gamma']
     mu_upsilon_old, Sigma_upsilon_old = q_params['mu_upsilon'], q_params['Sigma_upsilon']
-    E_gamma_gamma_T = jnp.array([S + jnp.outer(m, m) for m, S in zip(mu_gamma_old, Sigma_gamma_old)])
-    E_upsilon_upsilon_T = jnp.array([S + jnp.outer(m, m) for m, S in zip(mu_upsilon_old, Sigma_upsilon_old)])
+    E_gamma_gamma_T = jax.vmap(lambda m, S: S + jnp.outer(m, m))(mu_gamma_old, Sigma_gamma_old)
+    E_upsilon_upsilon_T = jax.vmap(lambda m, S: S + jnp.outer(m, m))(mu_upsilon_old, Sigma_upsilon_old)
     var_theta = alpha_theta / jnp.maximum(omega_theta**2, 1e-10)
     n, kappa = y_data.shape
 
-    zeta_sq = jnp.zeros((n, kappa))
-    for k in range(kappa):
-        diag_k = jnp.diag(E_upsilon_upsilon_T[k])
-        term1 = jnp.einsum('ni,ij,nj->n', E_theta, E_upsilon_upsilon_T[k], E_theta)
-        term1 += jnp.dot(var_theta, diag_k)
-        term2 = jnp.einsum('ij,ji->i', x_aux @ E_gamma_gamma_T[k], x_aux.T)
-        term3 = 2 * (E_theta @ E_upsilon[k]) * (x_aux @ E_gamma[k])
-        zeta_sq = zeta_sq.at[:, k].set(term1 + term2 + term3)
+    # Vectorized computation of zeta_sq, removing the Python loop
+    term1 = jnp.einsum('ni,kij,nj->nk', E_theta, E_upsilon_upsilon_T, E_theta)
+    diag_E_ups_ups_T = jnp.diagonal(E_upsilon_upsilon_T, axis1=1, axis2=2)
+    term1_var = jnp.einsum('nd,kd->nk', var_theta, diag_E_ups_ups_T)
+    term2 = jnp.einsum('na,kap,np->nk', x_aux, E_gamma_gamma_T, x_aux)
+    term3 = 2 * jnp.einsum('nd,kd->nk', E_theta, E_upsilon) * jnp.einsum('na,ka->nk', x_aux, E_gamma)
+    zeta_sq = term1 + term1_var + term2 + term3
     
     zeta = jnp.sqrt(jnp.maximum(zeta_sq, 1e-10))
     lambda_zeta = jnp.tanh(zeta / 2) / jnp.maximum(4 * zeta, 1e-10)
@@ -378,14 +375,11 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     # log-determinants to JAX arrays before summing. This avoids the
     # ``TypeError: sum requires ndarray or scalar arguments`` that was observed
     # during training.
-    H_gamma = 0.5 * jnp.sum(
-        jnp.array([jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1]
-                   for S in Sigma_gamma])
-    )
-    H_upsilon = 0.5 * jnp.sum(
-        jnp.array([jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1]
-                   for S in Sigma_upsilon])
-    )
+    slogdet_gamma_vmap = jax.vmap(lambda S: jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1])
+    H_gamma = 0.5 * jnp.sum(slogdet_gamma_vmap(Sigma_gamma))
+
+    slogdet_upsilon_vmap = jax.vmap(lambda S: jnp.linalg.slogdet(2 * jnp.pi * jnp.e * S)[1])
+    H_upsilon = 0.5 * jnp.sum(slogdet_upsilon_vmap(Sigma_upsilon))
 
     
     sqrt_ab_np = np.array(jnp.sqrt(gig_a * gig_b))
