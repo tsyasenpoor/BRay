@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import pandas as pd
-import anndata as ad
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
@@ -494,7 +493,8 @@ def run_variational_inference(x_data, y_data, x_aux, hyperparams,
 
         if elbo_val > best_elbo + min_delta:
             best_elbo = elbo_val
-            best_params = {k: v.copy() for k, v in q_params.items()}
+            best_params = {k: (v.copy() if hasattr(v, "copy") else v)
+                           for k, v in q_params.items()}
             patience_counter = 0
             if verbose: print(f"  New best ELBO found. Patience reset.")
         else:

@@ -1,10 +1,15 @@
-import psutil
+try:
+    import psutil
+except ImportError:  # Allow running without psutil installed
+    psutil = None
 import os
 import gc
 import numpy as np
 
 def get_memory_usage():
-    """Get the memory usage of the current process in MB"""
+    """Get the memory usage of the current process in MB."""
+    if psutil is None:
+        return 0.0
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     return mem_info.rss / (1024 * 1024)  # Convert bytes to MB
