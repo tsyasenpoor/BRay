@@ -184,9 +184,20 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     mu_upsilon_old, Sigma_upsilon_old = q_params['mu_upsilon'], q_params['Sigma_upsilon']
     gig_a_ups, gig_b_ups_old = q_params['gig_a_ups'], q_params['gig_b_ups']
 
-    E_log_theta_old = jsp.special.digamma(alpha_theta_old) - jnp.log(jnp.maximum(omega_theta_old, 1e-10))
-    E_log_beta_old = jsp.special.digamma(alpha_beta_old) - jnp.log(jnp.maximum(omega_beta_old, 1e-10))
+    # Compute expectations and log-expectations of theta and beta
+    E_theta_old = alpha_theta_old / jnp.maximum(omega_theta_old, 1e-10)
+    E_log_theta_old = (
+        jsp.special.digamma(alpha_theta_old)
+        - jnp.log(jnp.maximum(omega_theta_old, 1e-10))
+    )
+
+    E_beta_old = alpha_beta_old / jnp.maximum(omega_beta_old, 1e-10)
+    E_log_beta_old = (
+        jsp.special.digamma(alpha_beta_old)
+        - jnp.log(jnp.maximum(omega_beta_old, 1e-10))
+    )
     if using_mask:
+        E_beta_old = E_beta_old * mask
         E_log_beta_old = E_log_beta_old * mask
 
     print("Updating regression parameters (gamma, upsilon)...")
@@ -198,7 +209,7 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
      gig_b_ups_new) = update_regression_variational(
         mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
         gig_a_ups, gig_b_ups_old,
-        y_data, x_aux, hyperparams, E_log_theta_old, var_theta_old
+        y_data, x_aux, hyperparams, E_theta_old, var_theta_old
     )
 
     print("Updating latent counts (phi) and alpha parameters...")
@@ -228,12 +239,12 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     print("Updating rate (omega) and hyperprior (eta, xi) parameters...")
     
     E_eta_old = alpha_eta_old / jnp.maximum(omega_eta_old, 1e-10)
-    sum_E_theta_old = jnp.sum(E_log_theta_old, axis=0)
+    sum_E_theta_old = jnp.sum(E_theta_old, axis=0)
     omega_beta_new = E_eta_old[:, None] + sum_E_theta_old[None, :]
     omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e3)
 
     E_xi_old = alpha_xi_old / jnp.maximum(omega_xi_old, 1e-10)
-    sum_E_beta_old = jnp.sum(E_log_beta_old, axis=0) # Sum over genes
+    sum_E_beta_old = jnp.sum(E_beta_old, axis=0)  # Sum over genes
     omega_theta_new = E_xi_old[:, None] + sum_E_beta_old[None, :]
     omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e3)
     
