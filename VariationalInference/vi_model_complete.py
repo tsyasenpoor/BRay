@@ -237,20 +237,25 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
         alpha_beta_new = alpha_beta_new * mask
 
     print("Updating rate (omega) and hyperprior (eta, xi) parameters...")
-    
+
+    # Use newly updated counts to compute temporary expectations
+    E_theta_temp = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
+    E_beta_temp = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
+    if using_mask:
+        E_beta_temp = E_beta_temp * mask
+
     E_eta_old = alpha_eta_old / jnp.maximum(omega_eta_old, 1e-10)
-    sum_E_theta_old = jnp.sum(E_theta_old, axis=0)
-    omega_beta_new = E_eta_old[:, None] + sum_E_theta_old[None, :]
+    omega_beta_new = E_eta_old[:, None] + jnp.sum(E_theta_temp, axis=0)[None, :]
     omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e3)
 
     E_xi_old = alpha_xi_old / jnp.maximum(omega_xi_old, 1e-10)
-    sum_E_beta_old = jnp.sum(E_beta_old, axis=0)  # Sum over genes
-    omega_theta_new = E_xi_old[:, None] + sum_E_beta_old[None, :]
+    omega_theta_new = E_xi_old[:, None] + jnp.sum(E_beta_temp, axis=0)[None, :]
     omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e3)
-    
+
     E_beta_new = alpha_beta_new / jnp.maximum(omega_beta_new, 1e-10)
     if using_mask:
         E_beta_new = E_beta_new * mask
+
     alpha_eta_new = c_prime + c * jnp.sum(mask, axis=1) if using_mask else c_prime + c * d
     omega_eta_new = jnp.sum(E_beta_new, axis=1) + (c_prime / d_prime)
     omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e3)
