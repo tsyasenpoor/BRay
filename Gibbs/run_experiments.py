@@ -23,11 +23,21 @@ from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear
 # Log initial memory
 print(f"Initial memory usage: {get_memory_usage():.2f} MB")
 
-from vi_model_complete import run_model_and_evaluate
+from gibbs import SpikeSlabGibbsSampler
 from data import *
 
 
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+)
+from numpy.random import default_rng
+from scipy.special import expit
 
 
 def custom_train_test_split(*arrays, test_size=0.15, val_szie=0.15, random_state=None):
@@ -56,6 +66,202 @@ def custom_train_test_split(*arrays, test_size=0.15, val_szie=0.15, random_state
         final_result.append(test_parts[i])
     
     return final_result
+
+
+def _evaluate_predictions(y_true, probs, threshold=0.5, return_probs=True):
+    """Compute classification metrics given true labels and predicted probabilities."""
+    y_true = np.array(y_true)
+    if y_true.ndim == 1:
+        y_true = y_true.reshape(-1, 1)
+    kappa = y_true.shape[1]
+    preds = (np.array(probs) >= threshold).astype(int)
+
+    results = {}
+    if kappa == 1:
+        y_true_f = y_true.ravel()
+        y_pred_f = preds.ravel()
+        probs_f = np.array(probs).ravel()
+
+        acc = accuracy_score(y_true_f, y_pred_f)
+        prec = precision_score(y_true_f, y_pred_f, zero_division=0)
+        rec = recall_score(y_true_f, y_pred_f, zero_division=0)
+        f1v = f1_score(y_true_f, y_pred_f, zero_division=0)
+        try:
+            aucv = roc_auc_score(y_true_f, probs_f)
+        except ValueError:
+            aucv = 0.5
+        cm = confusion_matrix(y_true_f, y_pred_f)
+        results = {
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1": f1v,
+            "roc_auc": aucv,
+            "confusion_matrix": cm.tolist(),
+            "threshold": threshold,
+        }
+    else:
+        metrics_per_class = []
+        for k in range(kappa):
+            yt = y_true[:, k]
+            yp = preds[:, k]
+            pr = np.array(probs)[:, k]
+            acc_k = accuracy_score(yt, yp)
+            prec_k = precision_score(yt, yp, zero_division=0)
+            rec_k = recall_score(yt, yp, zero_division=0)
+            f1_k = f1_score(yt, yp, zero_division=0)
+            try:
+                auc_k = roc_auc_score(yt, pr)
+            except ValueError:
+                auc_k = 0.5
+            metrics_per_class.append({
+                "class": k,
+                "accuracy": acc_k,
+                "precision": prec_k,
+                "recall": rec_k,
+                "f1": f1_k,
+                "roc_auc": auc_k,
+            })
+
+        acc_macro = np.mean([m["accuracy"] for m in metrics_per_class])
+        prec_macro = np.mean([m["precision"] for m in metrics_per_class])
+        rec_macro = np.mean([m["recall"] for m in metrics_per_class])
+        f1_macro = np.mean([m["f1"] for m in metrics_per_class])
+        auc_macro = np.mean([m["roc_auc"] for m in metrics_per_class])
+
+        results = {
+            "accuracy": acc_macro,
+            "precision": prec_macro,
+            "recall": rec_macro,
+            "f1": f1_macro,
+            "roc_auc": auc_macro,
+            "per_class_metrics": metrics_per_class,
+            "threshold": threshold,
+        }
+
+    if return_probs:
+        results["probabilities"] = np.array(probs).tolist()
+    return results
+
+
+def _fold_in_theta_gibbs(X_new, sampler, n_iter=30):
+    """Estimate latent theta for new data using the trained sampler parameters."""
+    rng = default_rng(sampler.rng.integers(1, 1_000_000))
+    n, p = X_new.shape
+    d = sampler.d
+    theta = rng.gamma(1.0, 1.0, size=(n, d))
+    xi = rng.gamma(1.0, 1.0, size=n)
+
+    beta = np.exp(sampler.log_beta)
+    sum_beta = beta.sum(axis=0)
+
+    for _ in range(n_iter):
+        for i in range(n):
+            for l in range(d):
+                rate = xi[i] + sum_beta[l]
+                shape = sampler.a + np.dot(X_new[i], beta[:, l])
+                theta[i, l] = rng.gamma(shape, 1.0 / rate)
+            xi_rate = sampler.b_prime + theta[i].sum()
+            xi_shape = sampler.a_prime + sampler.a * d
+            xi[i] = rng.gamma(xi_shape, 1.0 / xi_rate)
+
+    return theta
+
+
+def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
+                             seed=None, test_size=0.15, val_size=0.15,
+                             max_iters=100, return_probs=True, sample_ids=None,
+                             mask=None, scores=None, return_params=False):
+    if sample_ids is None:
+        sample_ids = np.arange(x_data.shape[0])
+    if scores is None:
+        scores = np.zeros(x_data.shape[0])
+
+    temp_size = val_size + test_size
+    X_train, X_temp, XA_train, XA_temp, y_train, y_temp, ids_train, ids_temp, sc_train, sc_temp = train_test_split(
+        x_data, x_aux, y_data, sample_ids, scores, test_size=temp_size, random_state=seed
+    )
+    rel_test = test_size / temp_size
+    X_val, X_test, XA_val, XA_test, y_val, y_test, ids_val, ids_test, sc_val, sc_test = train_test_split(
+        X_temp, XA_temp, y_temp, ids_temp, sc_temp, test_size=rel_test, random_state=seed
+    )
+
+    sampler = SpikeSlabGibbsSampler(
+        X_train, y_train, XA_train, n_programs=hyperparams["d"],
+        a=hyperparams.get("a", 0.3), a_prime=hyperparams.get("a_prime", 0.3),
+        b_prime=hyperparams.get("b_prime", 0.3), c=hyperparams.get("c", 0.3),
+        c_prime=hyperparams.get("c_prime", 0.3), d_prime=hyperparams.get("d_prime", 0.3),
+        tau1_sq=hyperparams.get("tau", 1.0), tau0_sq=1e-4,
+        pi=0.2, sigma_gamma_sq=hyperparams.get("sigma", 1.0), seed=seed, mask=mask
+    )
+    sampler.run(max_iters)
+
+    logits_tr = sampler.theta @ sampler.upsilon.T + XA_train @ sampler.gamma.T
+    probs_tr = expit(logits_tr)
+    theta_val = _fold_in_theta_gibbs(X_val, sampler)
+    logits_val = theta_val @ sampler.upsilon.T + XA_val @ sampler.gamma.T
+    probs_val = expit(logits_val)
+    theta_test = _fold_in_theta_gibbs(X_test, sampler)
+    logits_test = theta_test @ sampler.upsilon.T + XA_test @ sampler.gamma.T
+    probs_test = expit(logits_test)
+
+    train_metrics = _evaluate_predictions(y_train, probs_tr, return_probs=return_probs)
+    val_metrics = _evaluate_predictions(y_val, probs_val, return_probs=return_probs)
+    test_metrics = _evaluate_predictions(y_test, probs_test, return_probs=return_probs)
+
+    train_df = pd.DataFrame({
+        "sample_id": ids_train,
+        "true_label": y_train.reshape(-1),
+        "probability": np.round(np.array(probs_tr).reshape(-1), 4),
+        "predicted_label": (np.array(probs_tr) >= 0.5).astype(int).reshape(-1),
+        "cyto_seed_score": sc_train,
+    })
+
+    val_df = pd.DataFrame({
+        "sample_id": ids_val,
+        "true_label": y_val.reshape(-1),
+        "probability": np.round(np.array(probs_val).reshape(-1), 4),
+        "predicted_label": (np.array(probs_val) >= 0.5).astype(int).reshape(-1),
+        "cyto_seed_score": sc_val,
+    })
+
+    test_df = pd.DataFrame({
+        "sample_id": ids_test,
+        "true_label": y_test.reshape(-1),
+        "probability": np.round(np.array(probs_test).reshape(-1), 4),
+        "predicted_label": (np.array(probs_test) >= 0.5).astype(int).reshape(-1),
+        "cyto_seed_score": sc_test,
+    })
+
+    results = {
+        "data_info": {
+            "n_train": X_train.shape[0],
+            "n_val": X_val.shape[0],
+            "n_test": X_test.shape[0],
+            "p": X_train.shape[1],
+            "d": hyperparams["d"],
+        },
+        "train_metrics": {k: v for k, v in train_metrics.items() if k != "probabilities"},
+        "val_metrics": {k: v for k, v in val_metrics.items() if k != "probabilities"},
+        "test_metrics": {k: v for k, v in test_metrics.items() if k != "probabilities"},
+        "E_upsilon": sampler.upsilon.tolist(),
+        "E_gamma": sampler.gamma.tolist(),
+        "train_results_df": train_df,
+        "val_results_df": val_df,
+        "test_results_df": test_df,
+    }
+
+    if return_probs:
+        results["train_probabilities"] = train_metrics["probabilities"]
+        results["val_probabilities"] = val_metrics["probabilities"]
+        results["test_probabilities"] = test_metrics["probabilities"]
+
+    results["E_beta"] = np.exp(sampler.log_beta).tolist()
+
+    if return_params:
+        results["delta"] = sampler.delta.tolist()
+
+    return results
 
 def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None):
     os.makedirs(output_dir, exist_ok=True)
@@ -99,7 +305,7 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
             val_split_size = 0.15
             
             try:
-                results = run_model_and_evaluate(
+                results = run_sampler_and_evaluate(
                     x_data=X,
                     x_aux=x_aux,
                     y_data=Y,
@@ -371,7 +577,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
     
     clear_memory()
     try:
-        results = run_model_and_evaluate(
+        results = run_sampler_and_evaluate(
             x_data=X,
             x_aux=x_aux,
             y_data=Y,
@@ -385,9 +591,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
             sample_ids=sample_ids,
             mask=extended_mask,
             scores=scores,
-            return_params=True,
-            plot_elbo=True,
-            plot_prefix=plot_prefix
+            return_params=True
         )
         
         if "train_results_df" in results:
@@ -493,7 +697,7 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     plot_prefix = os.path.join(exp_output_dir, plot_prefix_basename)
     
     clear_memory()
-    results = run_model_and_evaluate(
+    results = run_sampler_and_evaluate(
         x_data=X,
         x_aux=x_aux,
         y_data=Y,
@@ -507,10 +711,7 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         sample_ids=sample_ids,
         mask=None,
         scores=scores,
-        return_params=True,
-        plot_elbo=True,
-        plot_prefix=plot_prefix,
-        beta_init=beta_init
+        return_params=True
     )
     
     if "train_results_df" in results:

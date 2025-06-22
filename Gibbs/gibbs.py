@@ -4,7 +4,14 @@ from scipy.special import expit, logsumexp
 
 
 class SpikeSlabGibbsSampler:
-    """Gibbs sampler using a spike-and-slab prior for ``upsilon`` coefficients."""
+    """Gibbs sampler using a spike-and-slab prior for ``upsilon`` coefficients.
+
+    This implementation was originally written for experiments without any gene
+    program masking.  To support the different experiment configurations used in
+    ``run_experiments.py`` we optionally allow a ``mask`` matrix specifying
+    which gene--program combinations are active.  If a mask is provided the
+    corresponding ``beta`` entries are fixed to zero throughout sampling.
+    """
 
     def __init__(
         self,
@@ -24,6 +31,7 @@ class SpikeSlabGibbsSampler:
         pi: float = 0.2,
         sigma_gamma_sq: float = 1.0,
         seed: int | None = None,
+        mask: np.ndarray | None = None,
     ) -> None:
         self.rng = default_rng(seed)
 
@@ -35,6 +43,15 @@ class SpikeSlabGibbsSampler:
         self.q = self.X_aux.shape[1]
         self.k = self.Y.shape[1]
         self.d = n_programs
+
+        self.mask = None
+        if mask is not None:
+            m = np.asarray(mask)
+            if m.shape != (self.p, self.d):
+                raise ValueError(
+                    "mask must have shape (p, d) matching (genes, programs)"
+                )
+            self.mask = m.astype(int)
 
         # Hyperparameters
         self.a = a
@@ -59,6 +76,8 @@ class SpikeSlabGibbsSampler:
         self.log_beta = np.log(
             self.rng.gamma(1.0, 1.0, size=(self.p, self.d)) + 1e-12
         )
+        if self.mask is not None:
+            self.log_beta = np.where(self.mask, self.log_beta, -np.inf)
         self.log_xi = np.log(self.rng.gamma(1.0, 1.0, size=self.n) + 1e-12)
         self.log_eta = np.log(self.rng.gamma(1.0, 1.0, size=self.p) + 1e-12)
 
@@ -99,10 +118,15 @@ class SpikeSlabGibbsSampler:
         beta_new = np.zeros_like(self.log_beta)
         for j in range(self.p):
             for l in range(self.d):
+                if self.mask is not None and self.mask[j, l] == 0:
+                    beta_new[j, l] = 0.0
+                    continue
                 rate = np.exp(self.log_eta[j]) + np.exp(self.log_theta[:, l]).sum()
                 shape = self.c + np.dot(self.X[:, j], np.exp(self.log_theta[:, l]))
                 beta_new[j, l] = self.rng.gamma(shape, 1.0 / rate)
         self.log_beta = np.log(beta_new + 1e-12)
+        if self.mask is not None:
+            self.log_beta = np.where(self.mask, self.log_beta, -np.inf)
 
     def _update_xi(self) -> None:
         xi_new = np.zeros_like(self.log_xi)
