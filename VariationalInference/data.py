@@ -422,3 +422,45 @@ def filter_protein_coding_genes(adata, gene_annotation):
     })
     
     return adata_filtered
+
+
+def sample_adata(adata, n_cells=None, cell_fraction=None,
+                 n_genes=None, gene_fraction=None, random_state=0):
+    """Return a random subset of the AnnData object.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input dataset.
+    n_cells : int, optional
+        Number of cells to sample.  Mutually exclusive with ``cell_fraction``.
+    cell_fraction : float, optional
+        Fraction of cells to sample.
+    n_genes : int, optional
+        Number of genes to sample.  Mutually exclusive with ``gene_fraction``.
+    gene_fraction : float, optional
+        Fraction of genes to sample.
+    random_state : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    AnnData
+        Subsampled AnnData object.
+    """
+
+    rng = np.random.default_rng(random_state)
+
+    if cell_fraction is not None:
+        n_cells = max(1, int(adata.n_obs * cell_fraction))
+    if n_cells is None or n_cells > adata.n_obs:
+        n_cells = adata.n_obs
+    cell_indices = rng.choice(adata.n_obs, size=n_cells, replace=False)
+
+    if gene_fraction is not None:
+        n_genes = max(1, int(adata.n_vars * gene_fraction))
+    if n_genes is None or n_genes > adata.n_vars:
+        n_genes = adata.n_vars
+    gene_indices = rng.choice(adata.n_vars, size=n_genes, replace=False)
+
+    return adata[cell_indices, :][:, gene_indices].copy()
