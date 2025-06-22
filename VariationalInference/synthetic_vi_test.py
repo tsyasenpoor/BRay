@@ -53,7 +53,7 @@ def main():
         var_names=var_names,
         hyperparams=hyperparams,
         seed=0,
-        max_iters=5,
+        max_iters=10,
         return_probs=True,
         mask=None,
         sample_ids=None,

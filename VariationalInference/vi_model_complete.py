@@ -162,8 +162,8 @@ def initialize_q_params(n, p, kappa, p_aux, d, hyperparams, seed=None, beta_init
     
     return q_params
 
-
 def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
+    # --- 1. Unpack data and parameters (no change) ---
     x_data = jnp.array(x_data)
     y_data = jnp.array(y_data)
     if len(y_data.shape) == 1:
@@ -184,26 +184,19 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     mu_upsilon_old, Sigma_upsilon_old = q_params['mu_upsilon'], q_params['Sigma_upsilon']
     gig_a_ups, gig_b_ups_old = q_params['gig_a_ups'], q_params['gig_b_ups']
 
-    # Compute expectations and log-expectations of theta and beta
+    # --- 2. Compute necessary expectations from OLD parameters (no change) ---
     E_theta_old = alpha_theta_old / jnp.maximum(omega_theta_old, 1e-10)
-    E_log_theta_old = (
-        jsp.special.digamma(alpha_theta_old)
-        - jnp.log(jnp.maximum(omega_theta_old, 1e-10))
-    )
+    E_log_theta_old = jsp.special.digamma(alpha_theta_old) - jnp.log(jnp.maximum(omega_theta_old, 1e-10))
 
     E_beta_old = alpha_beta_old / jnp.maximum(omega_beta_old, 1e-10)
-    E_log_beta_old = (
-        jsp.special.digamma(alpha_beta_old)
-        - jnp.log(jnp.maximum(omega_beta_old, 1e-10))
-    )
+    E_log_beta_old = jsp.special.digamma(alpha_beta_old) - jnp.log(jnp.maximum(omega_beta_old, 1e-10))
     if using_mask:
         E_beta_old = E_beta_old * mask
         E_log_beta_old = E_log_beta_old * mask
 
+    # --- 3. Update regression parameters (gamma, upsilon) (no change) ---
     print("Updating regression parameters (gamma, upsilon)...")
-    
     var_theta_old = alpha_theta_old / jnp.maximum(omega_theta_old**2, 1e-10)
-
     (mu_gamma_new, Sigma_gamma_new,
      mu_upsilon_new, Sigma_upsilon_new,
      gig_b_ups_new) = update_regression_variational(
@@ -212,10 +205,10 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
         y_data, x_aux, hyperparams, E_theta_old, var_theta_old
     )
 
+    # --- 4. Update latent counts (phi) and shape parameters (alpha_theta, alpha_beta) (no change) ---
     print("Updating latent counts (phi) and alpha parameters...")
     n, p = x_data.shape
     alpha_beta_new = jnp.full_like(alpha_beta_old, c)
-    
     
     batch_size = max(1, min(100, n // 10))
     alpha_theta_from_data = jnp.zeros_like(alpha_theta_old)
@@ -236,35 +229,46 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     if using_mask:
         alpha_beta_new = alpha_beta_new * mask
 
-    print("Updating rate (omega) and hyperprior (eta, xi) parameters...")
+    # --- 5. RESTRUCTURED & STABILIZED SEQUENTIAL UPDATES for rate and hyperprior parameters ---
+    print("Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...")
 
-    # Use newly updated counts to compute temporary expectations
-    E_theta_temp = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
-    E_beta_temp = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
+    # Update hyperprior for beta (eta) first
+    # This update only depends on E_beta, which we will compute with its new alpha and old omega
+    E_beta_temp_for_eta = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
     if using_mask:
-        E_beta_temp = E_beta_temp * mask
+        E_beta_temp_for_eta = E_beta_temp_for_eta * mask
+        
+    alpha_eta_new = c_prime + c * jnp.sum(mask, axis=1) if using_mask else c_prime + c * d
+    omega_eta_new = jnp.sum(E_beta_temp_for_eta, axis=1) + (c_prime / d_prime)
+    omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e6) # SAFEGUARD: Clip to prevent extreme values
+    E_eta_new = alpha_eta_new / omega_eta_new # Use new omega_eta for expectation
 
-    E_eta_old = alpha_eta_old / jnp.maximum(omega_eta_old, 1e-10)
-    omega_beta_new = E_eta_old[:, None] + jnp.sum(E_theta_temp, axis=0)[None, :]
-    omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e3)
+    # Now update omega_beta using the NEW E_eta and an E_theta based on new alpha_theta
+    E_theta_temp_for_beta = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
+    omega_beta_new = E_eta_new[:, None] + jnp.sum(E_theta_temp_for_beta, axis=0)[None, :]
+    omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e6) # SAFEGUARD: Clip
 
-    E_xi_old = alpha_xi_old / jnp.maximum(omega_xi_old, 1e-10)
-    omega_theta_new = E_xi_old[:, None] + jnp.sum(E_beta_temp, axis=0)[None, :]
-    omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e3)
+    # --- Now, do the same for the theta side ---
 
-    E_beta_new = alpha_beta_new / jnp.maximum(omega_beta_new, 1e-10)
+    # Update hyperprior for theta (xi) first
+    # This update depends on E_theta, which we calculate with new alpha and old omega
+    E_theta_temp_for_xi = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
+
+    alpha_xi_new = a_prime + a * d
+    omega_xi_new = jnp.sum(E_theta_temp_for_xi, axis=1) + (a_prime / b_prime)
+    omega_xi_new = jnp.clip(omega_xi_new, 1e-6, 1e6) # SAFEGUARD: Clip
+    E_xi_new = alpha_xi_new / omega_xi_new # Use new omega_xi for expectation
+
+    # CRITICAL FIX: Update omega_theta using the NEW E_xi and an E_beta calculated
+    # from the NEW alpha_beta and the NEW omega_beta.
+    E_beta_new = alpha_beta_new / omega_beta_new # Use the just-updated omega_beta_new
     if using_mask:
         E_beta_new = E_beta_new * mask
+        
+    omega_theta_new = E_xi_new[:, None] + jnp.sum(E_beta_new, axis=0)[None, :]
+    omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e6) # SAFEGUARD: Clip
 
-    alpha_eta_new = c_prime + c * jnp.sum(mask, axis=1) if using_mask else c_prime + c * d
-    omega_eta_new = jnp.sum(E_beta_new, axis=1) + (c_prime / d_prime)
-    omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e3)
-
-    E_theta_new = alpha_theta_new / jnp.maximum(omega_theta_new, 1e-10)
-    alpha_xi_new = a_prime + a * d
-    omega_xi_new = jnp.sum(E_theta_new, axis=1) + (a_prime / b_prime)
-    omega_xi_new = jnp.clip(omega_xi_new, 1e-6, 1e3)
-    
+    # --- 6. Assemble the new parameter dictionary (no change) ---
     q_params_new = {
         "alpha_eta": alpha_eta_new, "omega_eta": omega_eta_new,
         "alpha_beta": alpha_beta_new, "omega_beta": omega_beta_new,
