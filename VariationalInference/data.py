@@ -181,6 +181,10 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
             # Extract the dataset splits
             ajm_ap_samples = adata[adata.obs['dataset'] == 'ap']
             ajm_cyto_samples = adata[adata.obs['dataset'] == 'cyto']
+
+            # Normalize and log-transform
+            log_normalize_adata(ajm_ap_samples)
+            log_normalize_adata(ajm_cyto_samples)
             
             print("AJM AP Samples distribution:")
             print(ajm_ap_samples.obs['ap'].value_counts())
@@ -334,6 +338,10 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     ajm_ap_samples = ajm_adata[ajm_adata.obs['ap'].isin([0,1])]
     ajm_cyto_samples = ajm_adata[ajm_adata.obs['cyto'].isin([0,1])]
 
+    # Normalize and log-transform
+    log_normalize_adata(ajm_ap_samples)
+    log_normalize_adata(ajm_cyto_samples)
+
     # Add dataset identifier to help with cache loading
     ajm_ap_samples.obs['dataset'] = 'ap'
     ajm_cyto_samples.obs['dataset'] = 'cyto'
@@ -414,7 +422,7 @@ def filter_protein_coding_genes(adata, gene_annotation):
     print(f"Protein-coding genes found: {len(common_genes)}")
     
     adata_filtered = adata[:, common_genes].copy()
-    
+
     log_memory("After filtering protein coding genes")
     log_array_sizes({
         'adata.X': adata.X,
@@ -422,6 +430,28 @@ def filter_protein_coding_genes(adata, gene_annotation):
     })
     
     return adata_filtered
+
+
+def log_normalize_adata(adata, scale_factor=1e4):
+    """Library size normalize and log-transform the counts in an AnnData object."""
+    import scipy.sparse as sp
+
+    X = adata.X.astype(float)
+
+    if sp.issparse(X):
+        library_sizes = np.array(X.sum(axis=1)).reshape(-1, 1)
+        library_sizes[library_sizes == 0] = 1
+        X = X.multiply(1 / library_sizes)
+        X = X.multiply(scale_factor)
+        X.data = np.log1p(X.data)
+    else:
+        library_sizes = X.sum(axis=1, keepdims=True)
+        library_sizes[library_sizes == 0] = 1
+        X = (X / library_sizes) * scale_factor
+        X = np.log1p(X)
+
+    adata.X = X
+    return adata
 
 
 def sample_adata(adata, n_cells=None, cell_fraction=None,

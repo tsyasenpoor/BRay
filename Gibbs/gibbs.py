@@ -218,15 +218,29 @@ class SpikeSlabGibbsSampler:
         self._update_delta()
         self._update_upsilon()
 
-    def run(self, n_iter: int) -> dict:
-        """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``."""
-        trace_upsilon = np.zeros((n_iter, *self.upsilon.shape))
-        trace_delta = np.zeros((n_iter, *self.delta.shape))
+    def run(self, n_iter: int, *, burn_in: int = 0) -> dict:
+        """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``.
+
+        Parameters
+        ----------
+        n_iter : int
+            Total number of Gibbs iterations to perform.
+        burn_in : int, optional
+            Number of initial iterations to discard from the returned traces.
+        """
+        if burn_in < 0 or burn_in >= n_iter:
+            raise ValueError("burn_in must be non-negative and less than n_iter")
+
+        trace_len = n_iter - burn_in
+        trace_upsilon = np.zeros((trace_len, *self.upsilon.shape))
+        trace_delta = np.zeros((trace_len, *self.delta.shape))
 
         for t in range(n_iter):
             self.step()
-            trace_upsilon[t] = self.upsilon
-            trace_delta[t] = self.delta
+            if t >= burn_in:
+                idx = t - burn_in
+                trace_upsilon[idx] = self.upsilon
+                trace_delta[idx] = self.delta
 
         return {
             "upsilon": trace_upsilon,
