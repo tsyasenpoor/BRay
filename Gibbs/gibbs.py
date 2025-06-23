@@ -27,8 +27,10 @@ class SpikeSlabGibbsSampler:
         c_prime: float = 0.3,
         d_prime: float = 0.3,
         tau1_sq: float = 1.0,
-        tau0_sq: float = 1e-4,
-        pi: float = 0.2,
+        tau0_sq: float = 1e-6,
+        pi: float = 0.05,
+        pi_alpha: float = 1.0,
+        pi_beta: float = 10.0,
         sigma_gamma_sq: float = 1.0,
         seed: int | None = None,
         mask: np.ndarray | None = None,
@@ -62,7 +64,9 @@ class SpikeSlabGibbsSampler:
         self.d_prime = d_prime
         self.tau1_sq = tau1_sq
         self.tau0_sq = tau0_sq
-        self.pi = pi
+        self.pi_alpha = pi_alpha
+        self.pi_beta = pi_beta
+        self.pi = self.rng.beta(pi_alpha, pi_beta)
         self.sigma_gamma_sq = sigma_gamma_sq
 
         self._init_params()
@@ -207,6 +211,19 @@ class SpikeSlabGibbsSampler:
                 upsilon_new[k] = proposal
         self.upsilon = upsilon_new
 
+    def _update_pi(self) -> None:
+        """Update π using conjugate Beta posterior"""
+        # Count active components across all k outcomes
+        n_active = np.sum(self.delta)
+        n_total = self.k * self.d
+        
+        # Beta posterior parameters
+        alpha_post = self.pi_alpha + n_active
+        beta_post = self.pi_beta + n_total - n_active
+        
+        # Sample new π
+        self.pi = self.rng.beta(alpha_post, beta_post)
+
     # ------------------------------------------------------------------
     def step(self) -> None:
         """Run a single Gibbs iteration."""
@@ -217,6 +234,7 @@ class SpikeSlabGibbsSampler:
         self._update_gamma()
         self._update_delta()
         self._update_upsilon()
+        self._update_pi()
 
         self.upsilon_trace.append(self.upsilon.copy())
         self.delta_trace.append(self.delta.copy())
@@ -242,6 +260,9 @@ class SpikeSlabGibbsSampler:
         for t in range(n_iter):
             self.step()
             
+            self.upsilon_trace.append(self.upsilon.copy())
+            self.delta_trace.append(self.delta.copy())
+
             # Convergence check during sampling
             if check_convergence and t > 0:
                 self.check_convergence_every_n_steps(t + 1, check_every)
