@@ -177,6 +177,12 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
     if scores is None:
         scores = np.zeros(x_data.shape[0])
 
+    # Add debugging prints
+    print(f"DEBUG: Input x_data shape: {x_data.shape}")
+    print(f"DEBUG: Input x_data type: {type(x_data)}")
+    print(f"DEBUG: Input y_data shape: {y_data.shape}")
+    print(f"DEBUG: Input sample_ids length: {len(sample_ids)}")
+
     temp_size = val_size + test_size
     X_train, X_temp, XA_train, XA_temp, y_train, y_temp, ids_train, ids_temp, sc_train, sc_temp = train_test_split(
         x_data, x_aux, y_data, sample_ids, scores, test_size=temp_size, random_state=seed
@@ -185,6 +191,25 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
     X_val, X_test, XA_val, XA_test, y_val, y_test, ids_val, ids_test, sc_val, sc_test = train_test_split(
         X_temp, XA_temp, y_temp, ids_temp, sc_temp, test_size=rel_test, random_state=seed
     )
+
+    print(f"DEBUG: X_train shape: {X_train.shape}")
+    print(f"DEBUG: X_train type: {type(X_train)}")
+    print(f"DEBUG: y_train shape: {y_train.shape}")
+    print(f"DEBUG: XA_train shape: {XA_train.shape}")
+
+    # Convert sparse matrices to dense arrays if needed
+    if hasattr(X_train, 'toarray'):
+        print("Converting X_train from sparse to dense")
+        X_train = X_train.toarray()
+    if hasattr(X_val, 'toarray'):
+        print("Converting X_val from sparse to dense")
+        X_val = X_val.toarray()
+    if hasattr(X_test, 'toarray'):
+        print("Converting X_test from sparse to dense")
+        X_test = X_test.toarray()
+    
+    print(f"DEBUG: After conversion - X_train shape: {X_train.shape}, type: {type(X_train)}")
+
 
     sampler = SpikeSlabGibbsSampler(
         X_train, y_train, XA_train, n_programs=hyperparams["d"],
@@ -263,7 +288,7 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
 
     return results
 
-def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None):
+def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None):
     os.makedirs(output_dir, exist_ok=True)
     all_results = {}
 
@@ -522,7 +547,7 @@ def create_gene_program_results(results, var_names):
     }
 
 def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500, 
-                                  output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/combined",
+                                  output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/combined",
                                   seed=None, max_iter=100):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
@@ -628,17 +653,18 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         
         print(f"Saved combined model results to {exp_output_dir}")
 
+        return results
+
     except Exception as e:
         print(f"--- UNHANDLED EXCEPTION in combined experiment ---")
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         results = {"error": str(e), "status": "crashed"}
-        
         return results
 
 def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pathway_names,
-                                output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/pathway_initiated",
+                                output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/pathway_initiated",
                                 seed=None, max_iter=100):
     """
     Run pathway-initialized experiment.
@@ -757,10 +783,13 @@ def main():
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
     
+    parser.add_argument("--max_genes", type=int, help="Use only this many genes (for testing)")
     
+    parser.add_argument("--max_samples", type=int, help="Use only this many samples (for testing)")
+
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    
+
     if not args.mask and not args.initialized and args.d is None and not args.combined:
         parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified.")
     
@@ -775,7 +804,7 @@ def main():
         base_output_dir_name = "unmasked"
     
     # Define the root results directory
-    root_results_dir = "/labs/Aguiar/SSPA_BRAY/BRay/Results"
+    root_results_dir = "/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults"
     base_output_dir = os.path.join(root_results_dir, base_output_dir_name)
     os.makedirs(base_output_dir, exist_ok=True)
     
@@ -788,6 +817,28 @@ def main():
     ajm_ap_samples, ajm_cyto_samples = prepare_ajm_dataset()
     ajm_cyto_filtered = filter_protein_coding_genes(ajm_cyto_samples, gene_annotation)
     
+    if args.max_genes and args.max_genes < ajm_cyto_filtered.n_vars:
+        print(f"Limiting to {args.max_genes} genes for testing (out of {ajm_cyto_filtered.n_vars})")
+        # Select genes with highest variance or expression
+        gene_means = np.array(ajm_cyto_filtered.X.mean(axis=0)).flatten()
+        top_gene_indices = np.argsort(gene_means)[-args.max_genes:]
+        ajm_cyto_filtered = ajm_cyto_filtered[:, top_gene_indices]
+        print(f"Filtered dataset shape: {ajm_cyto_filtered.shape}")
+
+    if args.max_samples and args.max_samples < ajm_cyto_filtered.n_obs:
+        print(f"Limiting to {args.max_samples} samples for testing (out of {ajm_cyto_filtered.n_obs})")
+        cyto_labels = ajm_cyto_filtered.obs['cyto']
+        from sklearn.model_selection import train_test_split
+        _, sample_subset, _, _ = train_test_split(
+            np.arange(ajm_cyto_filtered.n_obs), 
+            cyto_labels,
+            test_size=args.max_samples/ajm_cyto_filtered.n_obs,
+            stratify=cyto_labels,
+            random_state=42
+        )
+        ajm_cyto_filtered = ajm_cyto_filtered[sample_subset]
+        print(f"Filtered dataset shape: {ajm_cyto_filtered.shape}")
+
     del ajm_ap_samples
     del ajm_cyto_samples
     clear_memory()
@@ -894,6 +945,13 @@ def main():
             n_gp=args.n_gp, output_dir=run_dir, # Pass run_dir as output_dir
             seed=None, max_iter=args.max_iter
         )
+        # Add debugging to see what's returned
+        print(f"DEBUG: Combined results keys: {list(combined_results.keys()) if combined_results else 'None'}")
+        if combined_results:
+            for key, value in combined_results.items():
+                if isinstance(value, dict):
+                    print(f"DEBUG: {key} contains: {list(value.keys())}")
+        
         all_results["combined_config"] = combined_results
     
     elif args.initialized:
@@ -915,7 +973,7 @@ def main():
         else:
             print(f"Using UNMASKED configuration with {args.d} gene programs")
 
-            std_results = run_all_experiments(
+        std_results = run_all_experiments(
             datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
             pathway_names=pathway_names_list

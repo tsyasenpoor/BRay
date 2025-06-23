@@ -714,7 +714,7 @@ def main():
         else:
             print(f"Using UNMASKED configuration with {args.d} gene programs")
 
-            std_results = run_all_experiments(
+        std_results = run_all_experiments(
             datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
             pathway_names=pathway_names_list
