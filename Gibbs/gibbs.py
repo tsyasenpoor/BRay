@@ -276,7 +276,7 @@ class SpikeSlabGibbsSampler:
 
             print(f"Returning {len(trace_upsilon)} post-burn-in samples")
             
-            return {
+        return {
                 "upsilon": trace_upsilon,
                 "delta": trace_delta,
             }
