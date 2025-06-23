@@ -170,8 +170,9 @@ def _fold_in_theta_gibbs(X_new, sampler, n_iter=30):
 
 def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
                              seed=None, test_size=0.15, val_size=0.15,
-                             max_iters=100, return_probs=True, sample_ids=None,
-                             mask=None, scores=None, return_params=False):
+                             max_iters=100, burn_in=0, return_probs=True,
+                             sample_ids=None, mask=None, scores=None,
+                             return_params=False):
     if sample_ids is None:
         sample_ids = np.arange(x_data.shape[0])
     if scores is None:
@@ -219,7 +220,7 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         tau1_sq=hyperparams.get("tau", 1.0), tau0_sq=1e-4,
         pi=0.2, sigma_gamma_sq=hyperparams.get("sigma", 1.0), seed=seed, mask=mask
     )
-    sampler.run(max_iters)
+    sampler.run(max_iters, burn_in=burn_in)
 
     logits_tr = sampler.theta @ sampler.upsilon.T + XA_train @ sampler.gamma.T
     probs_tr = expit(logits_tr)
@@ -288,7 +289,7 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
 
     return results
 
-def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None):
+def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/unmasked", seed=None, mask=None, max_iter=100, burn_in=0, pathway_names=None):
     os.makedirs(output_dir, exist_ok=True)
     all_results = {}
 
@@ -340,6 +341,7 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                     test_size=test_split_size,
                     val_size=val_split_size,
                     max_iters=max_iter,
+                    burn_in=burn_in,
                     return_probs=True,
                     sample_ids=sample_ids,
                     mask=mask,
@@ -546,9 +548,9 @@ def create_gene_program_results(results, var_names):
         "gene_programs": gene_program_results
     }
 
-def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500, 
+def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500,
                                   output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/combined",
-                                  seed=None, max_iter=100):
+                                  seed=None, max_iter=100, burn_in=0):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
     Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
@@ -612,6 +614,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
             test_size=0.15,
             val_size=0.15,
             max_iters=max_iter,
+            burn_in=burn_in,
             return_probs=True,
             sample_ids=sample_ids,
             mask=extended_mask,
@@ -665,7 +668,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
 
 def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pathway_names,
                                 output_dir="/labs/Aguiar/SSPA_BRAY/BRay/GibbsResults/pathway_initiated",
-                                seed=None, max_iter=100):
+                                seed=None, max_iter=100, burn_in=0):
     """
     Run pathway-initialized experiment.
     Results will be saved directly into the provided output_dir (timestamped directory).
@@ -733,6 +736,7 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         test_size=0.15,
         val_size=0.15,
         max_iters=max_iter,
+        burn_in=burn_in,
         return_probs=True,
         sample_ids=sample_ids,
         mask=None,
@@ -777,6 +781,7 @@ def main():
     parser.add_argument("--mask", action="store_true", help="Use mask derived from pathways matrix")
     parser.add_argument("--d", type=int, help="Value of d when mask is not provided")
     parser.add_argument("--max_iter", type=int, default=100, help="Maximum iterations for variational inference")
+    parser.add_argument("--burn_in", type=int, default=0, help="Number of initial Gibbs samples to discard")
     parser.add_argument("--reduced_pathways", type=int, help="Use only this many pathways from the full set (for testing with mask)")
     
     parser.add_argument("--combined", action="store_true", help="Run combined pathway+gene program configuration")
@@ -943,7 +948,7 @@ def main():
         combined_results = run_combined_gp_and_pathway_experiment(
             dataset_name, adata, label_col, mask_array, pathway_names_list,
             n_gp=args.n_gp, output_dir=run_dir, # Pass run_dir as output_dir
-            seed=None, max_iter=args.max_iter
+            seed=None, max_iter=args.max_iter, burn_in=args.burn_in
         )
         # Add debugging to see what's returned
         print(f"DEBUG: Combined results keys: {list(combined_results.keys()) if combined_results else 'None'}")
@@ -961,7 +966,8 @@ def main():
         adata, label_col = datasets[dataset_name]
         initialized_results = run_pathway_initialized_experiment(
             dataset_name, adata, label_col, mask_array, pathway_names_list,
-            output_dir=run_dir, seed=None, max_iter=args.max_iter # Pass run_dir
+            output_dir=run_dir, seed=None, max_iter=args.max_iter,
+            burn_in=args.burn_in # Pass run_dir
         )
         all_results["initialized_config"] = initialized_results
     
@@ -976,7 +982,7 @@ def main():
         std_results = run_all_experiments(
             datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
-            pathway_names=pathway_names_list
+            burn_in=args.burn_in, pathway_names=pathway_names_list
         )
         all_results.update(std_results)
 
