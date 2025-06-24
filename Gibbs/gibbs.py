@@ -236,9 +236,6 @@ class SpikeSlabGibbsSampler:
         self._update_upsilon()
         self._update_pi()
 
-        self.upsilon_trace.append(self.upsilon.copy())
-        self.delta_trace.append(self.delta.copy())
-
     def run(self, n_iter: int, *, burn_in: int = 0, check_convergence: bool = True, check_every: int = 50) -> dict:
         """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``.
 
@@ -254,14 +251,18 @@ class SpikeSlabGibbsSampler:
 
         self.upsilon_trace = []
         self.delta_trace = []
+        self.gamma_trace = []
+        self.log_beta_trace = []
 
         print(f"Running {n_iter} iterations with {burn_in} burn-in...")
         
         for t in range(n_iter):
             self.step()
-            
+
             self.upsilon_trace.append(self.upsilon.copy())
             self.delta_trace.append(self.delta.copy())
+            self.gamma_trace.append(self.gamma.copy())
+            self.log_beta_trace.append(self.log_beta.copy())
 
             # Convergence check during sampling
             if check_convergence and t > 0:
@@ -273,13 +274,17 @@ class SpikeSlabGibbsSampler:
             trace_len = n_iter - burn_in
             trace_upsilon = np.array(self.upsilon_trace[burn_in:])
             trace_delta = np.array(self.delta_trace[burn_in:])
+            trace_gamma = np.array(self.gamma_trace[burn_in:])
+            trace_log_beta = np.array(self.log_beta_trace[burn_in:])
 
             print(f"Returning {len(trace_upsilon)} post-burn-in samples")
             
         return {
-                "upsilon": trace_upsilon,
-                "delta": trace_delta,
-            }
+            "upsilon": trace_upsilon,
+            "delta": trace_delta,
+            "gamma": trace_gamma,
+            "log_beta": trace_log_beta,
+        }
     
     def check_convergence_every_n_steps(self, step, check_every=50):
         """Quick convergence diagnostic"""
