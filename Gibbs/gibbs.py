@@ -3,6 +3,47 @@ from numpy.random import default_rng
 from scipy.special import expit, logsumexp
 
 
+def _compute_rhat(chains: np.ndarray) -> np.ndarray:
+    """Compute Gelman-Rubin R-hat statistic.
+
+    Parameters
+    ----------
+    chains : np.ndarray
+        Array of shape (n_chains, n_samples, ...).
+
+    Returns
+    -------
+    np.ndarray
+        R-hat values with shape matching ``chains`` without the first two axes.
+    """
+    m, n = chains.shape[0], chains.shape[1]
+    chain_means = chains.mean(axis=1)
+    grand_mean = chain_means.mean(axis=0)
+    B = n * np.sum((chain_means - grand_mean) ** 2, axis=0) / (m - 1)
+    W = chains.var(axis=1, ddof=1).mean(axis=0)
+    var_hat = ((n - 1) / n) * W + (1 / n) * B
+    return np.sqrt(var_hat / W)
+
+
+def _effective_sample_size(chains: np.ndarray) -> np.ndarray:
+    """Estimate effective sample size using autocorrelation."""
+    m, n = chains.shape[0], chains.shape[1]
+    chain_means = chains.mean(axis=1)
+    chain_vars = chains.var(axis=1, ddof=1)
+
+    var_within = chain_vars.mean(axis=0)
+    acov_sum = np.zeros_like(var_within)
+    for t in range(1, n):
+        acov_t = ((chains[:, :-t] - chain_means[:, None]) * (chains[:, t:] - chain_means[:, None])).mean(axis=(0,1))
+        rho_t = acov_t / var_within
+        if np.all(rho_t < 0):
+            break
+        acov_sum += rho_t
+    tau = 1 + 2 * acov_sum
+    ess = m * n / tau
+    return ess
+
+
 class SpikeSlabGibbsSampler:
     """Gibbs sampler using a spike-and-slab prior for ``upsilon`` coefficients.
 
@@ -236,7 +277,16 @@ class SpikeSlabGibbsSampler:
         self._update_upsilon()
         self._update_pi()
 
-    def run(self, n_iter: int, *, burn_in: int = 0, check_convergence: bool = True, check_every: int = 50) -> dict:
+    def run(
+        self,
+        n_iter: int,
+        *,
+        burn_in: int = 0,
+        check_convergence: bool = True,
+        check_every: int = 50,
+        rhat_thresh: float = 1.01,
+        ess_thresh: int = 200,
+    ) -> dict:
         """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``.
 
         Parameters
@@ -264,44 +314,34 @@ class SpikeSlabGibbsSampler:
             self.gamma_trace.append(self.gamma.copy())
             self.log_beta_trace.append(self.log_beta.copy())
 
-            # Convergence check during sampling
-            if check_convergence and t > 0:
-                self.check_convergence_every_n_steps(t + 1, check_every)
-            
+            if check_convergence and (t + 1) % check_every == 0 and (t + 1) > burn_in:
+                trace = np.array(self.upsilon_trace[burn_in:])
+                if trace.shape[0] >= 4:
+                    half = trace.shape[0] // 2
+                    chains = np.stack([trace[:half], trace[-half:]], axis=0)
+                    rhat = _compute_rhat(chains)
+                    ess = _effective_sample_size(chains)
+                    if np.all(rhat < rhat_thresh) and np.all(ess > ess_thresh):
+                        print(
+                            f"Converged at iteration {t + 1} "
+                            f"(max R-hat {rhat.max():.3f}, min ESS {ess.min():.1f})"
+                        )
+                        n_iter = t + 1
+                        break
+
             if (t + 1) % 100 == 0:
                 print(f"  Completed iteration {t + 1}/{n_iter}")
 
-            trace_len = n_iter - burn_in
-            trace_upsilon = np.array(self.upsilon_trace[burn_in:])
-            trace_delta = np.array(self.delta_trace[burn_in:])
-            trace_gamma = np.array(self.gamma_trace[burn_in:])
-            trace_log_beta = np.array(self.log_beta_trace[burn_in:])
+        trace_upsilon = np.array(self.upsilon_trace[burn_in:n_iter])
+        trace_delta = np.array(self.delta_trace[burn_in:n_iter])
+        trace_gamma = np.array(self.gamma_trace[burn_in:n_iter])
+        trace_log_beta = np.array(self.log_beta_trace[burn_in:n_iter])
 
-            print(f"Returning {len(trace_upsilon)} post-burn-in samples")
-            
+        print(f"Returning {len(trace_upsilon)} post-burn-in samples")
+
         return {
             "upsilon": trace_upsilon,
             "delta": trace_delta,
             "gamma": trace_gamma,
             "log_beta": trace_log_beta,
         }
-    
-    def check_convergence_every_n_steps(self, step, check_every=50):
-        """Quick convergence diagnostic"""
-        if step > 100 and step % check_every == 0:
-            if len(self.upsilon_trace) < 100:
-                return
-                
-            # Check if key parameters have stabilized
-            recent_upsilon = np.array(self.upsilon_trace[-50:])  # Last 50 samples
-            older_upsilon = np.array(self.upsilon_trace[-100:-50])  # Previous 50
-            
-            # Simple stability check
-            recent_mean = np.mean(recent_upsilon, axis=0)
-            older_mean = np.mean(older_upsilon, axis=0)
-            relative_change = np.abs(recent_mean - older_mean) / (np.abs(older_mean) + 1e-6)
-            
-            if np.max(relative_change) < 0.01:  # 1% change threshold
-                print(f"  Convergence check at step {step}: STABLE (max change: {np.max(relative_change):.4f})")
-            else:
-                print(f"  Convergence check at step {step}: CHANGING (max change: {np.max(relative_change):.4f})")
