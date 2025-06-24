@@ -144,15 +144,16 @@ def _evaluate_predictions(y_true, probs, threshold=0.5, return_probs=True):
     return results
 
 
-def _fold_in_theta_gibbs(X_new, sampler, n_iter=30):
-    """Estimate latent theta for new data using the trained sampler parameters."""
+def _fold_in_theta_gibbs(X_new, sampler, n_iter=30, beta=None):
+    """Estimate latent theta for new data using fixed beta values."""
     rng = default_rng(sampler.rng.integers(1, 1_000_000))
     n, p = X_new.shape
     d = sampler.d
     theta = rng.gamma(1.0, 1.0, size=(n, d))
     xi = rng.gamma(1.0, 1.0, size=n)
 
-    beta = np.exp(sampler.log_beta)
+    if beta is None:
+        beta = np.exp(sampler.log_beta)
     sum_beta = beta.sum(axis=0)
 
     for _ in range(n_iter):
@@ -222,13 +223,31 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
     )
     sampler.run(max_iters, burn_in=burn_in)
 
-    logits_tr = sampler.theta @ sampler.upsilon.T + XA_train @ sampler.gamma.T
+    upsilon_trace = np.array(sampler.upsilon_trace[burn_in:])
+    if upsilon_trace.size > 0:
+        E_upsilon = upsilon_trace.mean(axis=0)
+    else:
+        E_upsilon = sampler.upsilon
+
+    gamma_trace = np.array(sampler.gamma_trace[burn_in:])
+    if gamma_trace.size > 0:
+        E_gamma = gamma_trace.mean(axis=0)
+    else:
+        E_gamma = sampler.gamma
+
+    beta_trace = np.array(sampler.log_beta_trace[burn_in:])
+    if beta_trace.size > 0:
+        E_beta = np.exp(beta_trace).mean(axis=0)
+    else:
+        E_beta = np.exp(sampler.log_beta)
+
+    logits_tr = sampler.theta @ E_upsilon.T + XA_train @ E_gamma.T
     probs_tr = expit(logits_tr)
-    theta_val = _fold_in_theta_gibbs(X_val, sampler)
-    logits_val = theta_val @ sampler.upsilon.T + XA_val @ sampler.gamma.T
+    theta_val = _fold_in_theta_gibbs(X_val, sampler, beta=E_beta)
+    logits_val = theta_val @ E_upsilon.T + XA_val @ E_gamma.T
     probs_val = expit(logits_val)
-    theta_test = _fold_in_theta_gibbs(X_test, sampler)
-    logits_test = theta_test @ sampler.upsilon.T + XA_test @ sampler.gamma.T
+    theta_test = _fold_in_theta_gibbs(X_test, sampler, beta=E_beta)
+    logits_test = theta_test @ E_upsilon.T + XA_test @ E_gamma.T
     probs_test = expit(logits_test)
 
     train_metrics = _evaluate_predictions(y_train, probs_tr, return_probs=return_probs)
@@ -270,8 +289,8 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         "train_metrics": {k: v for k, v in train_metrics.items() if k != "probabilities"},
         "val_metrics": {k: v for k, v in val_metrics.items() if k != "probabilities"},
         "test_metrics": {k: v for k, v in test_metrics.items() if k != "probabilities"},
-        "E_upsilon": sampler.upsilon.tolist(),
-        "E_gamma": sampler.gamma.tolist(),
+        "E_upsilon": E_upsilon.tolist(),
+        "E_gamma": E_gamma.tolist(),
         "train_results_df": train_df,
         "val_results_df": val_df,
         "test_results_df": test_df,
@@ -282,7 +301,7 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         results["val_probabilities"] = val_metrics["probabilities"]
         results["test_probabilities"] = test_metrics["probabilities"]
 
-    results["E_beta"] = np.exp(sampler.log_beta).tolist()
+    results["E_beta"] = E_beta.tolist()
 
     if return_params:
         results["delta"] = sampler.delta.tolist()

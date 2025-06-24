@@ -146,3 +146,7 @@ Analysis/perf.png
 Analysis/unmasked1.png
 Analysis/unmasked2.png
 Analysis/unmasked3.png
+
+# Ignore Python bytecode
+__pycache__/
+*.pyc

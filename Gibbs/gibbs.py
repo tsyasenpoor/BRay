@@ -236,10 +236,16 @@ class SpikeSlabGibbsSampler:
         self._update_upsilon()
         self._update_pi()
 
-        self.upsilon_trace.append(self.upsilon.copy())
-        self.delta_trace.append(self.delta.copy())
-
-    def run(self, n_iter: int, *, burn_in: int = 0, check_convergence: bool = True, check_every: int = 50) -> dict:
+    def run(
+        self,
+        n_iter: int,
+        *,
+        burn_in: int = 0,
+        check_convergence: bool = True,
+        check_every: int = 50,
+        tol: float = 0.01,
+        patience: int = 3,
+    ) -> dict:
         """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``.
 
         Parameters
@@ -254,38 +260,63 @@ class SpikeSlabGibbsSampler:
 
         self.upsilon_trace = []
         self.delta_trace = []
+        self.gamma_trace = []
+        self.log_beta_trace = []
 
-        print(f"Running {n_iter} iterations with {burn_in} burn-in...")
-        
+        print(f"Running up to {n_iter} iterations with {burn_in} burn-in...")
+
+        stable_count = 0
+        final_iter = n_iter
+
         for t in range(n_iter):
             self.step()
-            
+
             self.upsilon_trace.append(self.upsilon.copy())
             self.delta_trace.append(self.delta.copy())
+            self.gamma_trace.append(self.gamma.copy())
+            self.log_beta_trace.append(self.log_beta.copy())
 
             # Convergence check during sampling
             if check_convergence and t > 0:
-                self.check_convergence_every_n_steps(t + 1, check_every)
+                stable = self.check_convergence_every_n_steps(
+                    t + 1, check_every, tol
+                )
+                if stable:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                if stable_count >= patience:
+                    final_iter = t + 1
+                    print(f"Converged after {final_iter} iterations")
+                    break
             
             if (t + 1) % 100 == 0:
                 print(f"  Completed iteration {t + 1}/{n_iter}")
 
-            trace_len = n_iter - burn_in
-            trace_upsilon = np.array(self.upsilon_trace[burn_in:])
-            trace_delta = np.array(self.delta_trace[burn_in:])
+        trace_upsilon = np.array(self.upsilon_trace[burn_in:])
+        trace_delta = np.array(self.delta_trace[burn_in:])
+        trace_gamma = np.array(self.gamma_trace[burn_in:])
+        trace_log_beta = np.array(self.log_beta_trace[burn_in:])
 
-            print(f"Returning {len(trace_upsilon)} post-burn-in samples")
-            
+        print(f"Returning {len(trace_upsilon)} post-burn-in samples")
+
         return {
-                "upsilon": trace_upsilon,
-                "delta": trace_delta,
-            }
+            "upsilon": trace_upsilon,
+            "delta": trace_delta,
+            "gamma": trace_gamma,
+            "log_beta": trace_log_beta,
+            "n_iter": final_iter,
+        }
     
-    def check_convergence_every_n_steps(self, step, check_every=50):
-        """Quick convergence diagnostic"""
+    def check_convergence_every_n_steps(self, step, check_every=50, tol=0.01) -> bool:
+        """Quick convergence diagnostic.
+
+        Returns ``True`` if the recent ``upsilon`` mean has changed by less than
+        ``tol`` compared to the previous window.
+        """
         if step > 100 and step % check_every == 0:
             if len(self.upsilon_trace) < 100:
-                return
+                return False
                 
             # Check if key parameters have stabilized
             recent_upsilon = np.array(self.upsilon_trace[-50:])  # Last 50 samples
@@ -296,7 +327,15 @@ class SpikeSlabGibbsSampler:
             older_mean = np.mean(older_upsilon, axis=0)
             relative_change = np.abs(recent_mean - older_mean) / (np.abs(older_mean) + 1e-6)
             
-            if np.max(relative_change) < 0.01:  # 1% change threshold
-                print(f"  Convergence check at step {step}: STABLE (max change: {np.max(relative_change):.4f})")
+            max_change = np.max(relative_change)
+            if max_change < tol:
+                print(
+                    f"  Convergence check at step {step}: STABLE (max change: {max_change:.4f})"
+                )
+                return True
             else:
-                print(f"  Convergence check at step {step}: CHANGING (max change: {np.max(relative_change):.4f})")
+                print(
+                    f"  Convergence check at step {step}: CHANGING (max change: {max_change:.4f})"
+                )
+                return False
+        return False
