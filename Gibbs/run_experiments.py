@@ -157,14 +157,12 @@ def _fold_in_theta_gibbs(X_new, sampler, n_iter=30, beta=None):
     sum_beta = beta.sum(axis=0)
 
     for _ in range(n_iter):
-        for i in range(n):
-            for l in range(d):
-                rate = xi[i] + sum_beta[l]
-                shape = sampler.a + np.dot(X_new[i], beta[:, l])
-                theta[i, l] = rng.gamma(shape, 1.0 / rate)
-            xi_rate = sampler.b_prime + theta[i].sum()
-            xi_shape = sampler.a_prime + sampler.a * d
-            xi[i] = rng.gamma(xi_shape, 1.0 / xi_rate)
+        rate = xi[:, None] + sum_beta[None, :]
+        shape = sampler.a + X_new @ beta
+        theta = rng.gamma(shape, 1.0 / rate)
+        xi_rate = sampler.b_prime + theta.sum(axis=1)
+        xi_shape = sampler.a_prime + sampler.a * d
+        xi = rng.gamma(xi_shape, 1.0 / xi_rate)
 
     return theta
 
