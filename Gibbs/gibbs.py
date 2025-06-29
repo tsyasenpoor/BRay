@@ -1,6 +1,14 @@
 import numpy as np
 from numpy.random import default_rng
-from scipy.special import expit, logsumexp
+from scipy.special import expit
+
+try:
+    import jax
+    import jax.numpy as jnp
+    import jax.random as jrandom
+    JAX_AVAILABLE = True
+except Exception:
+    JAX_AVAILABLE = False
 
 
 def _compute_rhat(chains: np.ndarray) -> np.ndarray:
@@ -75,12 +83,20 @@ class SpikeSlabGibbsSampler:
         sigma_gamma_sq: float = 1.0,
         seed: int | None = None,
         mask: np.ndarray | None = None,
+        use_jax: bool = False,
     ) -> None:
+        self.use_jax = bool(use_jax and JAX_AVAILABLE)
         self.rng = default_rng(seed)
+        if self.use_jax:
+            self.key = jrandom.PRNGKey(seed or 0)
 
         self.X = np.asarray(X)
         self.X_aux = np.asarray(X_aux)
         self.Y = np.asarray(Y)
+        if self.use_jax:
+            self.X = jnp.asarray(self.X)
+            self.X_aux = jnp.asarray(self.X_aux)
+            self.Y = jnp.asarray(self.Y)
 
         self.n, self.p = self.X.shape
         self.q = self.X_aux.shape[1]
@@ -107,29 +123,75 @@ class SpikeSlabGibbsSampler:
         self.tau0_sq = tau0_sq
         self.pi_alpha = pi_alpha
         self.pi_beta = pi_beta
-        self.pi = self.rng.beta(pi_alpha, pi_beta)
+        self.pi = self._rng_beta(pi_alpha, pi_beta)
         self.sigma_gamma_sq = sigma_gamma_sq
 
         self._init_params()
 
     # ------------------------------------------------------------------
+    def _rng_gamma(self, shape, rate):
+        if self.use_jax:
+            self.key, subkey = jrandom.split(self.key)
+            return jrandom.gamma(subkey, shape, shape=shape.shape) / rate
+        return self.rng.gamma(shape, 1.0 / rate)
+
+    def _rng_normal(self, mean, std, size):
+        if self.use_jax:
+            self.key, subkey = jrandom.split(self.key)
+            return mean + std * jrandom.normal(subkey, shape=size)
+        return self.rng.normal(mean, std, size=size)
+
+    def _rng_binomial(self, n, p, size=None):
+        if self.use_jax:
+            self.key, subkey = jrandom.split(self.key)
+            return jrandom.binomial(subkey, n, p, shape=size)
+        return self.rng.binomial(n, p, size=size)
+
+    def _rng_uniform(self, size=None):
+        if self.use_jax:
+            self.key, subkey = jrandom.split(self.key)
+            return jrandom.uniform(subkey, shape=size)
+        return self.rng.random(size=size)
+
+    def _rng_beta(self, a, b):
+        if self.use_jax:
+            self.key, subkey = jrandom.split(self.key)
+            return jrandom.beta(subkey, a, b)
+        return self.rng.beta(a, b)
+
+    def _rng_multivariate_normal(self, mean, cov, size=None):
+        if self.use_jax:
+            self.key, subkey = jrandom.split(self.key)
+            return jrandom.multivariate_normal(subkey, mean, cov, shape=size)
+        return self.rng.multivariate_normal(mean, cov, size=size)
+
+    # ------------------------------------------------------------------
     def _init_params(self) -> None:
         """Initialise latent variables and parameters."""
         self.log_theta = np.log(
-            self.rng.gamma(1.0, 1.0, size=(self.n, self.d)) + 1e-12
+            self._rng_gamma(np.ones((self.n, self.d)), np.ones((self.n, self.d))) + 1e-12
         )
         self.log_beta = np.log(
-            self.rng.gamma(1.0, 1.0, size=(self.p, self.d)) + 1e-12
+            self._rng_gamma(np.ones((self.p, self.d)), np.ones((self.p, self.d))) + 1e-12
         )
         if self.mask is not None:
             self.log_beta = np.where(self.mask, self.log_beta, -np.inf)
-        self.log_xi = np.log(self.rng.gamma(1.0, 1.0, size=self.n) + 1e-12)
-        self.log_eta = np.log(self.rng.gamma(1.0, 1.0, size=self.p) + 1e-12)
+        self.log_xi = np.log(self._rng_gamma(np.ones(self.n), np.ones(self.n)) + 1e-12)
+        self.log_eta = np.log(self._rng_gamma(np.ones(self.p), np.ones(self.p)) + 1e-12)
 
-        self.gamma = self.rng.normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q))
+        self.gamma = self._rng_normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q))
 
-        self.delta = self.rng.binomial(1, self.pi, size=(self.k, self.d))
-        self.upsilon = self.rng.normal(0.0, 0.1, size=(self.k, self.d))
+        self.delta = self._rng_binomial(1, self.pi, size=(self.k, self.d))
+        self.upsilon = self._rng_normal(0.0, 0.1, size=(self.k, self.d))
+
+        if self.use_jax:
+            self.log_theta = jnp.asarray(self.log_theta)
+            self.log_beta = jnp.asarray(self.log_beta)
+            self.log_xi = jnp.asarray(self.log_xi)
+            self.log_eta = jnp.asarray(self.log_eta)
+            self.gamma = jnp.asarray(self.gamma)
+            self.delta = jnp.asarray(self.delta)
+            self.upsilon = jnp.asarray(self.upsilon)
 
     # ------------------------------------------------------------------
     @property
@@ -151,55 +213,48 @@ class SpikeSlabGibbsSampler:
     # ------------------------------------------------------------------
     # Conjugate updates for gamma-distributed parameters
     def _update_theta(self) -> None:
-        theta_new = np.zeros_like(self.log_theta)
-        for i in range(self.n):
-            for l in range(self.d):
-                rate = np.exp(self.log_xi[i]) + np.exp(self.log_beta[:, l]).sum()
-                shape = self.a + np.dot(self.X[i], np.exp(self.log_beta[:, l]))
-                theta_new[i, l] = self.rng.gamma(shape, 1.0 / rate)
+        exp_beta = np.exp(self.log_beta)
+        rate = np.exp(self.log_xi)[:, None] + exp_beta.sum(axis=0)[None, :]
+        shape = self.a + self.X @ exp_beta
+        theta_new = self._rng_gamma(shape, rate)
         self.log_theta = np.log(theta_new + 1e-12)
 
     def _update_beta(self) -> None:
-        beta_new = np.zeros_like(self.log_beta)
-        for j in range(self.p):
-            for l in range(self.d):
-                if self.mask is not None and self.mask[j, l] == 0:
-                    beta_new[j, l] = 0.0
-                    continue
-                rate = np.exp(self.log_eta[j]) + np.exp(self.log_theta[:, l]).sum()
-                shape = self.c + np.dot(self.X[:, j], np.exp(self.log_theta[:, l]))
-                beta_new[j, l] = self.rng.gamma(shape, 1.0 / rate)
+        exp_theta = np.exp(self.log_theta)
+        rate = np.exp(self.log_eta)[:, None] + exp_theta.sum(axis=0)[None, :]
+        shape = self.c + self.X.T @ exp_theta
+        beta_new = self._rng_gamma(shape, rate)
+        if self.mask is not None:
+            beta_new = np.where(self.mask, beta_new, 0.0)
         self.log_beta = np.log(beta_new + 1e-12)
         if self.mask is not None:
             self.log_beta = np.where(self.mask, self.log_beta, -np.inf)
 
     def _update_xi(self) -> None:
-        xi_new = np.zeros_like(self.log_xi)
-        for i in range(self.n):
-            rate = self.b_prime + np.exp(self.log_theta[i]).sum()
-            shape = self.a_prime + self.a * self.d
-            xi_new[i] = self.rng.gamma(shape, 1.0 / rate)
+        exp_theta = np.exp(self.log_theta)
+        rate = self.b_prime + exp_theta.sum(axis=1)
+        shape = self.a_prime + self.a * self.d
+        xi_new = self._rng_gamma(np.full(self.n, shape), rate)
         self.log_xi = np.log(xi_new + 1e-12)
 
     def _update_eta(self) -> None:
-        eta_new = np.zeros_like(self.log_eta)
-        for j in range(self.p):
-            rate = self.d_prime + np.exp(self.log_beta[j]).sum()
-            shape = self.c_prime + self.c * self.d
-            eta_new[j] = self.rng.gamma(shape, 1.0 / rate)
+        exp_beta = np.exp(self.log_beta)
+        rate = self.d_prime + exp_beta.sum(axis=1)
+        shape = self.c_prime + self.c * self.d
+        eta_new = self._rng_gamma(np.full(self.p, shape), rate)
         self.log_eta = np.log(eta_new + 1e-12)
 
     # ------------------------------------------------------------------
     def _update_gamma(self) -> None:
-        gamma_new = np.zeros_like(self.gamma)
         XTX = self.X_aux.T @ self.X_aux
         precision = XTX / self.sigma_gamma_sq + np.eye(self.q)
         cov = np.linalg.inv(precision)
-        for k in range(self.k):
-            logits = np.exp(self.log_theta) @ self.upsilon[k] + self.X_aux @ self.gamma[k]
-            z = self.Y[:, k] - expit(logits)
-            mean = cov @ self.X_aux.T @ z / self.sigma_gamma_sq
-            gamma_new[k] = self.rng.multivariate_normal(mean, cov)
+        logits = np.exp(self.log_theta) @ self.upsilon.T + self.X_aux @ self.gamma.T
+        z = self.Y - expit(logits)
+        mean = (cov @ (self.X_aux.T @ z) / self.sigma_gamma_sq).T
+        gamma_new = self._rng_multivariate_normal(
+            np.zeros(self.q), cov, size=self.k
+        ) + mean
         self.gamma = gamma_new
 
     # ------------------------------------------------------------------
@@ -214,6 +269,15 @@ class SpikeSlabGibbsSampler:
             )
         )
 
+    @staticmethod
+    def _log_likelihood_vec(logits: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Vectorised log likelihood over multiple outcomes."""
+        return (
+            y * logits
+            - np.maximum(logits, 0)
+            - np.log1p(np.exp(-np.abs(logits)))
+        ).sum(axis=0)
+
     def _log_posterior_upsilon(self, k: int, upsilon_k: np.ndarray) -> float:
         logits = np.exp(self.log_theta) @ upsilon_k + self.X_aux @ self.gamma[k]
         log_lik = self._log_likelihood(logits, self.Y[:, k])
@@ -221,36 +285,36 @@ class SpikeSlabGibbsSampler:
         log_prior = -0.5 * np.sum(upsilon_k**2 / prior_var)
         return log_lik + log_prior
 
+    def _log_posterior_upsilon_all(self, upsilon_mat: np.ndarray) -> np.ndarray:
+        logits = np.exp(self.log_theta) @ upsilon_mat.T + self.X_aux @ self.gamma.T
+        log_lik = self._log_likelihood_vec(logits, self.Y)
+        prior_var = np.where(self.delta == 1, self.tau1_sq, self.tau0_sq)
+        log_prior = -0.5 * np.sum(upsilon_mat**2 / prior_var, axis=1)
+        return log_lik + log_prior
+
     def _update_delta(self) -> None:
-        delta_new = np.zeros_like(self.delta)
-        for k in range(self.k):
-            for l in range(self.d):
-                v = self.upsilon[k, l]
-                log_p1 = (
-                    np.log(self.pi)
-                    - 0.5 * v * v / self.tau1_sq
-                    - 0.5 * np.log(2 * np.pi * self.tau1_sq)
-                )
-                log_p0 = (
-                    np.log(1 - self.pi)
-                    - 0.5 * v * v / self.tau0_sq
-                    - 0.5 * np.log(2 * np.pi * self.tau0_sq)
-                )
-                prob = 1.0 / (1.0 + np.exp(log_p0 - log_p1))
-                delta_new[k, l] = self.rng.binomial(1, prob)
-        self.delta = delta_new
+        v = self.upsilon
+        log_p1 = (
+            np.log(self.pi)
+            - 0.5 * v * v / self.tau1_sq
+            - 0.5 * np.log(2 * np.pi * self.tau1_sq)
+        )
+        log_p0 = (
+            np.log(1 - self.pi)
+            - 0.5 * v * v / self.tau0_sq
+            - 0.5 * np.log(2 * np.pi * self.tau0_sq)
+        )
+        prob = 1.0 / (1.0 + np.exp(log_p0 - log_p1))
+        self.delta = self._rng_binomial(1, prob)
 
     def _update_upsilon(self, step_size: float = 0.1) -> None:
-        upsilon_new = np.copy(self.upsilon)
-        for k in range(self.k):
-            current = self.upsilon[k]
-            proposal = current + self.rng.normal(0.0, step_size, size=current.shape)
-            log_p_curr = self._log_posterior_upsilon(k, current)
-            log_p_prop = self._log_posterior_upsilon(k, proposal)
-            log_accept = log_p_prop - log_p_curr
-            if log_accept >= 0 or self.rng.random() < np.exp(log_accept):
-                upsilon_new[k] = proposal
-        self.upsilon = upsilon_new
+        current = self.upsilon
+        proposal = current + self._rng_normal(0.0, step_size, size=current.shape)
+        log_p_curr = self._log_posterior_upsilon_all(current)
+        log_p_prop = self._log_posterior_upsilon_all(proposal)
+        log_accept = log_p_prop - log_p_curr
+        accept = (log_accept >= 0) | (self._rng_uniform(size=self.k) < np.exp(log_accept))
+        self.upsilon = np.where(accept[:, None], proposal, current)
 
     def _update_pi(self) -> None:
         """Update π using conjugate Beta posterior"""
@@ -263,7 +327,7 @@ class SpikeSlabGibbsSampler:
         beta_post = self.pi_beta + n_total - n_active
         
         # Sample new π
-        self.pi = self.rng.beta(alpha_post, beta_post)
+        self.pi = self._rng_beta(alpha_post, beta_post)
 
     # ------------------------------------------------------------------
     def step(self) -> None:
