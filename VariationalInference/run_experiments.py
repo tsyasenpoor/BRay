@@ -331,11 +331,19 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
                                   seed=None, max_iter=100):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
-    Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-    X = adata.X  
+    # Prepare label matrix (Y) and auxiliary matrix (x_aux) depending on the
+    # dataset and requested label column.  The EMTAB dataset stores Crohn's
+    # disease and ulcerative colitis as separate columns.  When the caller
+    # passes "both_labels" we interpret that as using both columns together.
+    if dataset_name == "emtab" and label_col == "both_labels":
+        Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
+        x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
+    else:
+        Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+        x_aux = np.ones((adata.shape[0], 1))
+
+    X = adata.X
     var_names = list(adata.var_names)
-    
-    x_aux = np.ones((X.shape[0],1)) 
     sample_ids = adata.obs.index.tolist()
     
     log_array_sizes({
@@ -454,11 +462,19 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     print(f"\nRunning pathway-initialized experiment on {dataset_name}, label={label_col}")
     print(f"This will initialize gene programs with pathway information, then let them evolve freely")
     
-    Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-    X = adata.X  
+    # Prepare Y and x_aux similarly to the combined experiment.  When using the
+    # EMTAB dataset the "both_labels" flag indicates that both Crohn's disease
+    # and ulcerative colitis columns should be used simultaneously.  In that
+    # case we also include age and sex information as auxiliary covariates.
+    if dataset_name == "emtab" and label_col == "both_labels":
+        Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
+        x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
+    else:
+        Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+        x_aux = np.ones((adata.shape[0], 1))
+
+    X = adata.X
     var_names = list(adata.var_names)
-    
-    x_aux = np.ones((X.shape[0],1)) 
     sample_ids = adata.obs.index.tolist()
     
     log_array_sizes({
