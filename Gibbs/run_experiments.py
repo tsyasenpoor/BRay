@@ -217,23 +217,29 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         b_prime=hyperparams.get("b_prime", 0.3), c=hyperparams.get("c", 0.3),
         c_prime=hyperparams.get("c_prime", 0.3), d_prime=hyperparams.get("d_prime", 0.3),
         tau1_sq=hyperparams.get("tau", 1.0), tau0_sq=1e-4,
-        pi=0.2, sigma_gamma_sq=hyperparams.get("sigma", 1.0), seed=seed, mask=mask
+        pi=0.2, sigma_gamma_sq=hyperparams.get("sigma", 1.0), seed=seed, mask=mask,
+        # Memory optimization parameters
+        memory_efficient=True,
+        use_float32=True,
+        trace_max_samples=500  # Keep fewer samples in memory
     )
-    sampler.run(max_iters, burn_in=burn_in)
+    results = sampler.run(max_iters, burn_in=burn_in, save_traces=True)
 
-    upsilon_trace = np.array(sampler.upsilon_trace[burn_in:])
+    # Get traces from the results dictionary
+    upsilon_trace = results["upsilon"]
+    gamma_trace = results["gamma"]
+    beta_trace = results["log_beta"]
+    
     if upsilon_trace.size > 0:
         E_upsilon = upsilon_trace.mean(axis=0)
     else:
         E_upsilon = sampler.upsilon
 
-    gamma_trace = np.array(sampler.gamma_trace[burn_in:])
     if gamma_trace.size > 0:
         E_gamma = gamma_trace.mean(axis=0)
     else:
         E_gamma = sampler.gamma
 
-    beta_trace = np.array(sampler.log_beta_trace[burn_in:])
     if beta_trace.size > 0:
         E_beta = np.exp(beta_trace).mean(axis=0)
     else:
@@ -313,12 +319,27 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
     for dataset_name, (adata, label_col) in datasets.items():
         print(f"\nRunning experiment on dataset {dataset_name}, label={label_col}")
         
-        Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-        X = adata.X  
-        var_names = list(adata.var_names)
+        if dataset_name == "emtab":
+            # For EMTAB, Y contains both Crohn's disease and ulcerative colitis columns
+            if label_col == "both_labels":
+                Y = adata.obs[['Crohn\'s disease', 'ulcerative colitis']].values.astype(float)
+            else:
+                # Use specific label column if provided
+                Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+            X = adata.X
+            var_names = list(adata.var_names)
+            
+            # For EMTAB, x_aux includes both age and sex_female columns
+            x_aux = adata.obs[['age', 'sex_female']].values.astype(float)
+            sample_ids = adata.obs.index.tolist()
+        else:
+            # For AJM datasets (ajm_cyto, ajm_ap), use original logic
+            Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
+            X = adata.X  
+            var_names = list(adata.var_names)
 
-        x_aux = np.ones((X.shape[0],1)) 
-        sample_ids = adata.obs.index.tolist()
+            x_aux = np.ones((X.shape[0],1)) 
+            sample_ids = adata.obs.index.tolist()
         
         log_array_sizes({
             'X': X,
@@ -804,6 +825,8 @@ def main():
     parser.add_argument("--combined", action="store_true", help="Run combined pathway+gene program configuration")
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
+    parser.add_argument("--dataset", type=str, default="cyto", choices=["cyto", "ap", "emtab"], help="Which dataset to use: cyto, ap, or emtab")
+    parser.add_argument("--label", type=str, help="Label column to use (for EMTAB dataset)")
     
     parser.add_argument("--max_genes", type=int, help="Use only this many genes (for testing)")
     
@@ -812,8 +835,8 @@ def main():
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
-    if not args.mask and not args.initialized and args.d is None and not args.combined:
-        parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified.")
+    if not args.mask and not args.initialized and args.d is None and not args.combined and args.dataset != "emtab":
+        parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified (except for emtab).")
     
     # Determine the base output directory (e.g., .../masked, .../unmasked)
     if args.combined:
@@ -835,169 +858,247 @@ def main():
     # This run_dir is the single folder where all results for this execution will go.
     run_dir = os.path.join(base_output_dir, date_time_stamp) 
     os.makedirs(run_dir, exist_ok=True)
-    
-    ajm_ap_samples, ajm_cyto_samples = prepare_ajm_dataset()
-    ajm_cyto_filtered = filter_protein_coding_genes(ajm_cyto_samples, gene_annotation)
-    
-    if args.max_genes and args.max_genes < ajm_cyto_filtered.n_vars:
-        print(f"Limiting to {args.max_genes} genes for testing (out of {ajm_cyto_filtered.n_vars})")
-        # Select genes with highest variance or expression
-        gene_means = np.array(ajm_cyto_filtered.X.mean(axis=0)).flatten()
-        top_gene_indices = np.argsort(gene_means)[-args.max_genes:]
-        ajm_cyto_filtered = ajm_cyto_filtered[:, top_gene_indices]
-        print(f"Filtered dataset shape: {ajm_cyto_filtered.shape}")
 
-    if args.max_samples and args.max_samples < ajm_cyto_filtered.n_obs:
-        print(f"Limiting to {args.max_samples} samples for testing (out of {ajm_cyto_filtered.n_obs})")
-        cyto_labels = ajm_cyto_filtered.obs['cyto']
-        from sklearn.model_selection import train_test_split
-        _, sample_subset, _, _ = train_test_split(
-            np.arange(ajm_cyto_filtered.n_obs), 
-            cyto_labels,
-            test_size=args.max_samples/ajm_cyto_filtered.n_obs,
-            stratify=cyto_labels,
-            random_state=42
-        )
-        ajm_cyto_filtered = ajm_cyto_filtered[sample_subset]
-        print(f"Filtered dataset shape: {ajm_cyto_filtered.shape}")
+    # --- DATASET LOADING LOGIC ---
+    datasets = {}
+    hyperparams_map = {}
+    mask_array = None
+    pathway_names_list = None
 
-    del ajm_ap_samples
-    del ajm_cyto_samples
-    clear_memory()
-    
-    common_genes = np.intersect1d(ajm_cyto_filtered.var_names, CYTOSEED_ensembl)
-    print(f"Found {len(common_genes)} common genes between dataset and CYTOSEED_ensembl")
-    cyto_seed_mask = np.array([gene in CYTOSEED_ensembl for gene in ajm_cyto_filtered.var_names])
-    cyto_seed_scores = ajm_cyto_filtered.X[:, cyto_seed_mask].sum(axis=1)
-    ajm_cyto_filtered.obs['cyto_seed_score'] = cyto_seed_scores
-    
-    mask_array = None # Renamed from mask to avoid conflict with args.mask
-    pathway_names_list = None # Renamed from pathway_names
-    
-    if args.mask or args.combined or args.initialized:
-        gene_names = list(ajm_cyto_filtered.var_names)
+    if args.dataset == "emtab":
+        # Load EMTAB data from data.py (already imported above)
+        emtab_data = prepare_and_load_emtab()
+        # For EMTAB, use both label columns by default
+        label_col = args.label if args.label else "both_labels"
+        print(f"Loaded EMTAB data with shape {emtab_data.shape} and label column '{label_col}'")
+        datasets["emtab"] = (emtab_data, label_col)
         
-        if args.reduced_pathways and args.reduced_pathways > 0:
-            if args.reduced_pathways >= len(pathways):
-                print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
-                pathway_names_list = list(pathways.keys())
+        # Pathway mask logic for EMTAB (same as AJM datasets)
+        if args.mask or args.combined or args.initialized:
+            gene_names = list(emtab_data.var_names)
+            if args.reduced_pathways and args.reduced_pathways > 0:
+                if args.reduced_pathways >= len(pathways):
+                    print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
+                    pathway_names_list = list(pathways.keys())
+                else:
+                    print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
+                    random.seed(42)
+                    pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
+                    print(f"Selected {len(pathway_names_list)} pathways randomly")
             else:
-                print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
-                random.seed(42)
-                pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
-                print(f"Selected {len(pathway_names_list)} pathways randomly")
+                pathway_names_list = list(pathways.keys())
+            print(f"Number of genes: {len(gene_names)}")
+            print(f"Number of pathways: {len(pathway_names_list)}")
+            M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
+            print("Filling matrix M...")
+            chunk_size = 100
+            total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
+            for chunk_idx in range(total_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
+                current_pathways = pathway_names_list[start_idx:end_idx]
+                print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
+                for pathway in current_pathways:
+                    gene_list = pathways[pathway]
+                    for gene in gene_list:
+                        if gene in M.index:
+                            M.loc[gene, pathway] = 1
+            print(f"Matrix M created with shape {M.shape}")
+            log_array_sizes({'M': M.values, 'emtab_data.X': emtab_data.X})
+            mask_array = M.values
+            print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
+            non_zero_entries = np.count_nonzero(mask_array)
+            total_entries = mask_array.size
+            sparsity = 100 * (1 - non_zero_entries / total_entries)
+            print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
+            del M
+            clear_memory()
+        
+        # Set up hyperparams for EMTAB
+        hyperparams_emtab = {
+            "c_prime": 2.0,  "d_prime": 3.0,
+            "c":      0.6,
+            "a_prime":2.0,   "b_prime": 3.0,
+            "a":      0.6,
+            "tau":    1.0,   "sigma":   1.0,
+        }
+        if args.mask:
+            hyperparams_emtab["d"] = [mask_array.shape[1]]
+            print(f"Using mask-based d value: {mask_array.shape[1]}")
+        elif args.combined:
+            print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
+        elif args.initialized:
+            print(f"Initialized config will use d = {mask_array.shape[1]}")
         else:
-            pathway_names_list = list(pathways.keys())
-        
-        print(f"Number of genes: {len(gene_names)}")
-        print(f"Number of pathways: {len(pathway_names_list)}")
-        
-        M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
-        
-        print("Filling matrix M...")
-        chunk_size = 100
-        total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
-        
-        for chunk_idx in range(total_chunks):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
-            current_pathways = pathway_names_list[start_idx:end_idx]
-            
-            print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
-            
-            for pathway in current_pathways:
-                gene_list = pathways[pathway]
-                for gene in gene_list:
-                    if gene in M.index:
-                        M.loc[gene, pathway] = 1
-        
-        print(f"Matrix M created with shape {M.shape}")
-        log_array_sizes({'M': M.values, 'ajm_cyto_filtered.X': ajm_cyto_filtered.X})
-        
-        mask_array = M.values
-        
-        print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
-        non_zero_entries = np.count_nonzero(mask_array)
-        total_entries = mask_array.size
-        sparsity = 100 * (1 - non_zero_entries / total_entries)
-        print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
-        
-        del M
-        clear_memory()
-    
-    hyperparams_cyto = {
-        "c_prime": 2.0,  "d_prime": 3.0,
-        "c":      0.6,
-        "a_prime":2.0,   "b_prime": 3.0,
-        "a":      0.6,
-        "tau":    1.0,   "sigma":   1.0,
-    }
-    
-    if args.mask:
-        hyperparams_cyto["d"] = [mask_array.shape[1]]
-        print(f"Using mask-based d value: {mask_array.shape[1]}")
-    elif args.combined:
-        # d value set within run_combined_gp_and_pathway_experiment
-        print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
-        # hyperparams_cyto["d"] is not directly used by run_combined_gp_and_pathway_experiment for 'd'
-    elif args.initialized:
-        # d value set within run_pathway_initialized_experiment
-        print(f"Initialized config will use d = {mask_array.shape[1]}")
-    else: # Regular unmasked gene program mode
-        hyperparams_cyto["d"] = [args.d]
-        print(f"Using specified d value: {args.d}")
-    
-    hyperparams_map = {
-        "ajm_cyto": hyperparams_cyto,
-    }
+            if args.d is not None:
+                hyperparams_emtab["d"] = [args.d]
+                print(f"Using specified d value: {args.d}")
+            else:
+                hyperparams_emtab["d"] = [50]
+                print(f"Using default d value: 50")
+        hyperparams_map = {"emtab": hyperparams_emtab}
 
-    datasets = {
-        "ajm_cyto": (ajm_cyto_filtered, "cyto"),
-    }
+    else:
+        # Load AJM data (cyto or ap)
+        ajm_ap_samples, ajm_cyto_samples = prepare_ajm_dataset()
+        
+        if args.dataset == "cyto":
+            ajm_cyto_filtered = filter_protein_coding_genes(ajm_cyto_samples, gene_annotation)
+            adata = ajm_cyto_filtered
+            label_col = "cyto"
+            del ajm_ap_samples
+            del ajm_cyto_samples
+        elif args.dataset == "ap":
+            ajm_ap_filtered = filter_protein_coding_genes(ajm_ap_samples, gene_annotation)
+            adata = ajm_ap_filtered
+            label_col = "ap"
+            del ajm_ap_samples
+            del ajm_cyto_samples
+        else:
+            raise ValueError(f"Unknown dataset: {args.dataset}")
+        clear_memory()
+
+        # For cyto, add cyto_seed_score
+        if args.dataset == "cyto":
+            common_genes = np.intersect1d(adata.var_names, CYTOSEED_ensembl)
+            print(f"Found {len(common_genes)} common genes between dataset and CYTOSEED_ensembl")
+            cyto_seed_mask = np.array([gene in CYTOSEED_ensembl for gene in adata.var_names])
+            cyto_seed_scores = adata.X[:, cyto_seed_mask].sum(axis=1)
+            adata.obs['cyto_seed_score'] = cyto_seed_scores
+
+        # Apply max_genes and max_samples filtering if specified
+        if args.max_genes and args.max_genes < adata.n_vars:
+            print(f"Limiting to {args.max_genes} genes for testing (out of {adata.n_vars})")
+            # Select genes with highest variance or expression
+            gene_means = np.array(adata.X.mean(axis=0)).flatten()
+            top_gene_indices = np.argsort(gene_means)[-args.max_genes:]
+            adata = adata[:, top_gene_indices]
+            print(f"Filtered dataset shape: {adata.shape}")
+
+        if args.max_samples and args.max_samples < adata.n_obs:
+            print(f"Limiting to {args.max_samples} samples for testing (out of {adata.n_obs})")
+            labels = adata.obs[label_col]
+            from sklearn.model_selection import train_test_split
+            _, sample_subset, _, _ = train_test_split(
+                np.arange(adata.n_obs), 
+                labels,
+                test_size=args.max_samples/adata.n_obs,
+                stratify=labels,
+                random_state=42
+            )
+            adata = adata[sample_subset]
+            print(f"Filtered dataset shape: {adata.shape}")
+
+        # Pathway mask logic (for cyto only)
+        if args.mask or args.combined or args.initialized:
+            gene_names = list(adata.var_names)
+            if args.reduced_pathways and args.reduced_pathways > 0:
+                if args.reduced_pathways >= len(pathways):
+                    print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
+                    pathway_names_list = list(pathways.keys())
+                else:
+                    print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
+                    random.seed(42)
+                    pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
+                    print(f"Selected {len(pathway_names_list)} pathways randomly")
+            else:
+                pathway_names_list = list(pathways.keys())
+            print(f"Number of genes: {len(gene_names)}")
+            print(f"Number of pathways: {len(pathway_names_list)}")
+            M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
+            print("Filling matrix M...")
+            chunk_size = 100
+            total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
+            for chunk_idx in range(total_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
+                current_pathways = pathway_names_list[start_idx:end_idx]
+                print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
+                for pathway in current_pathways:
+                    gene_list = pathways[pathway]
+                    for gene in gene_list:
+                        if gene in M.index:
+                            M.loc[gene, pathway] = 1
+            print(f"Matrix M created with shape {M.shape}")
+            log_array_sizes({'M': M.values, 'adata.X': adata.X})
+            mask_array = M.values
+            print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
+            non_zero_entries = np.count_nonzero(mask_array)
+            total_entries = mask_array.size
+            sparsity = 100 * (1 - non_zero_entries / total_entries)
+            print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
+            del M
+            clear_memory()
+        
+        # Set up hyperparams for cyto/ap
+        hyperparams_cyto = {
+            "c_prime": 2.0,  "d_prime": 3.0,
+            "c":      0.6,
+            "a_prime":2.0,   "b_prime": 3.0,
+            "a":      0.6,
+            "tau":    1.0,   "sigma":   1.0,
+        }
+        if args.mask:
+            hyperparams_cyto["d"] = [mask_array.shape[1]]
+            print(f"Using mask-based d value: {mask_array.shape[1]}")
+        elif args.combined:
+            print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
+        elif args.initialized:
+            print(f"Initialized config will use d = {mask_array.shape[1]}")
+        else:
+            if args.d is not None:
+                hyperparams_cyto["d"] = [args.d]
+                print(f"Using specified d value: {args.d}")
+            else:
+                hyperparams_cyto["d"] = [50]
+                print(f"Using default d value: 50")
+        dataset_key = "ajm_cyto" if args.dataset == "cyto" else "ajm_ap"
+        hyperparams_map = {dataset_key: hyperparams_cyto}
+        datasets = {dataset_key: (adata, label_col)}
+    
+
 
     all_results = {}
     
+    # --- EXPERIMENT RUNNING LOGIC ---
     if args.combined:
         print("\nRunning COMBINED PATHWAY + GENE PROGRAM configuration:")
         print(f"This will use {mask_array.shape[1]} pathway dimensions plus {args.n_gp} freely learned gene program dimensions")
-        dataset_name = "ajm_cyto"
+        dataset_name = list(datasets.keys())[0]
         adata, label_col = datasets[dataset_name]
         combined_results = run_combined_gp_and_pathway_experiment(
             dataset_name, adata, label_col, mask_array, pathway_names_list,
-            n_gp=args.n_gp, output_dir=run_dir, # Pass run_dir as output_dir
+            n_gp=args.n_gp, output_dir=run_dir,
             seed=None, max_iter=args.max_iter, burn_in=args.burn_in
         )
-        # Add debugging to see what's returned
-        print(f"DEBUG: Combined results keys: {list(combined_results.keys()) if combined_results else 'None'}")
-        if combined_results:
-            for key, value in combined_results.items():
-                if isinstance(value, dict):
-                    print(f"DEBUG: {key} contains: {list(value.keys())}")
-        
         all_results["combined_config"] = combined_results
     
     elif args.initialized:
         print("\nRunning PATHWAY-INITIALIZED configuration:")
         print(f"This will initialize {mask_array.shape[1]} gene programs using pathway information, then let them evolve freely")
-        dataset_name = "ajm_cyto"
+        dataset_name = list(datasets.keys())[0]
         adata, label_col = datasets[dataset_name]
         initialized_results = run_pathway_initialized_experiment(
             dataset_name, adata, label_col, mask_array, pathway_names_list,
             output_dir=run_dir, seed=None, max_iter=args.max_iter,
-            burn_in=args.burn_in # Pass run_dir
+            burn_in=args.burn_in
         )
         all_results["initialized_config"] = initialized_results
     
     else: # Standard masked or unmasked configuration
         print("\nRunning standard configuration:")
         current_mask_for_run = mask_array if args.mask else None
+        
         if args.mask:
             print(f"Using MASKED configuration with {mask_array.shape[1]} pathways")
         else:
-            print(f"Using UNMASKED configuration with {args.d} gene programs")
+            dval = hyperparams_map[list(datasets.keys())[0]]["d"]
+            if isinstance(dval, list):
+                dval = dval[0]
+            print(f"Using UNMASKED configuration with {dval} gene programs")
 
         std_results = run_all_experiments(
-            datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
+            datasets, hyperparams_map, output_dir=run_dir,
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
             burn_in=args.burn_in, pathway_names=pathway_names_list
         )

@@ -5,14 +5,19 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import os
+from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear_memory
 
-from gibbs import *
+# Log initial memory
+print(f"Initial memory usage: {get_memory_usage():.2f} MB")
 
+from vi_model_complete import run_model_and_evaluate
 
+log_memory("Before loading data files")
 
 cytoseeds_csv_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_FileTransfer/Seed genes/CYTOBEAM_Cytokines_KEGGPATHWAY_addedMif.csv"
 CYTOSEEDS_df = pd.read_csv(cytoseeds_csv_path)
 CYTOSEEDS = CYTOSEEDS_df['V4'].tolist() #173
+log_memory("After loading CYTOSEEDS")
 
 mg = mygene.MyGeneInfo()
 
@@ -33,10 +38,12 @@ def load_cache(cache_file):
 
 
 def convert_pathways_to_ensembl(pathways, cache_file="/labs/Aguiar/SSPA_BRAY/BRay/pathways_ensembl_cache.pkl"):
+    log_memory("Before convert_pathways_to_ensembl")
     
     # Try to load from cache first
     cached_pathways = load_cache(cache_file)
     if cached_pathways is not None:
+        log_memory("After loading pathways from cache")
 
         filtered_pathways = {}
         excluded_keywords = ["ADME", "DRUG", "MISCELLANEOUS", "EMT"]
@@ -101,6 +108,7 @@ def convert_pathways_to_ensembl(pathways, cache_file="/labs/Aguiar/SSPA_BRAY/BRa
     # Save to cache for future use
     save_cache(new_pathways, cache_file)
     
+    log_memory("After convert_pathways_to_ensembl")
     return new_pathways
 
 def batch_query(genes, batch_size=100):
@@ -117,7 +125,9 @@ cytoseed_cache_file = "/labs/Aguiar/SSPA_BRAY/BRay/cytoseed_ensembl_cache.pkl"
 symbol_to_ensembl_asg = load_cache(cytoseed_cache_file)
 
 if symbol_to_ensembl_asg is None:
+    log_memory("Before batch query")
     query_results = batch_query(CYTOSEEDS, batch_size=100)
+    log_memory("After batch query")
     
     symbol_to_ensembl_asg = {}
     for entry in query_results:
@@ -135,11 +145,14 @@ if symbol_to_ensembl_asg is None:
 CYTOSEED_ensembl = [symbol_to_ensembl_asg.get(gene) for gene in CYTOSEEDS if symbol_to_ensembl_asg.get(gene)]
 print(f"CYTOSEED_ensembl length: {len(CYTOSEED_ensembl)}")
 
+log_memory("Before reading pathways")
 pathways_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_FileTransfer/m2.cp.v2024.1.Mm.symbols.gmt"
 pathways = read_gmt(pathways_path)  # 1730 pathways
 print(f"Number of pathways: {len(pathways)}")
+log_memory("After reading pathways")
 
 pathways = convert_pathways_to_ensembl(pathways)  
+log_memory("After converting pathways to ensembl")
 
 # nap_file_path_raw = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_AJM2/2_Data/2_SingleCellData/1_GSE139565_NaiveAndPlasma/GEX_NAP_filt_raw_modelingonly_2024-02-05.csv"
 # nap_metadata_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_AJM2/2_Data/2_SingleCellData/1_GSE139565_NaiveAndPlasma/meta_NAP_unfilt_fullData_2024-02-05.csv"
@@ -151,6 +164,7 @@ ajm_metadata_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_AJM2/2_Data/2_SingleCellDa
 
 def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cache.h5ad"):
     print("Loading AJM dataset...")
+    log_memory("Before loading AJM dataset")
     
     # Import required modules at the function's top level
     import os
@@ -169,8 +183,8 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
             ajm_cyto_samples = adata[adata.obs['dataset'] == 'cyto']
 
             # Normalize and log-transform
-            log_normalize_adata(ajm_ap_samples)
-            log_normalize_adata(ajm_cyto_samples)
+            QCscRNAsizeFactorNormOnly(ajm_ap_samples)
+            QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
             
             print("AJM AP Samples distribution:")
             print(ajm_ap_samples.obs['ap'].value_counts())
@@ -178,6 +192,7 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
             print("AJM CYTO Samples distribution:")
             print(ajm_cyto_samples.obs['cyto'].value_counts())
             
+            log_memory("After loading AnnData from cache")
             return ajm_ap_samples, ajm_cyto_samples
         except Exception as e:
             print(f"Error loading cached AnnData: {e}")
@@ -202,6 +217,7 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
         print(e.stderr)
         raise RuntimeError("Failed to convert RDS file to CSV")
     
+    log_memory("After running R script for conversion")
     
     # Load the sparse matrix data
     print("Loading sparse matrix data...")
@@ -255,6 +271,7 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     # Now the shape is (ncols, nrows) - (cells, genes)
     print(f"Transposed matrix shape: {sparse_matrix.shape}")
     
+    log_memory("After loading sparse matrix")
     
     # Create AnnData object with transposed matrix where:
     # - Rows (observations) are cells
@@ -267,11 +284,13 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     ajm_adata.obs_names = col_names  # Cell names as observation names
     ajm_adata.var_names = row_names  # Gene names as variable names
     
+    log_memory("After creating AnnData object")
     
     print(f"AnnData object created with shape: {ajm_adata.shape}")
     
     # Load metadata separately
     ajm_features = pd.read_csv(ajm_metadata_path, index_col=0)
+    log_memory("After loading AJM metadata")
     
     print(f"AJM features shape: {ajm_features.shape}")
     
@@ -320,8 +339,8 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     ajm_cyto_samples = ajm_adata[ajm_adata.obs['cyto'].isin([0,1])]
 
     # Normalize and log-transform
-    log_normalize_adata(ajm_ap_samples)
-    log_normalize_adata(ajm_cyto_samples)
+    QCscRNAsizeFactorNormOnly(ajm_ap_samples)
+    QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
 
     # Add dataset identifier to help with cache loading
     ajm_ap_samples.obs['dataset'] = 'ap'
@@ -364,7 +383,16 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
 
     print("AJM CYTO Samples distribution:")
     print(ajm_cyto_samples.obs['cyto'].value_counts())
-
+    
+    # Log memory usage of created AnnData objects
+    log_array_sizes({
+        'ajm_adata.X': ajm_adata.X,
+        'ajm_ap_samples.X': ajm_ap_samples.X,
+        'ajm_cyto_samples.X': ajm_cyto_samples.X
+    })
+    
+    # Try to clear some memory
+    clear_memory()
     
     # Clean up the temporary CSV files
     temp_files = ["matrix_sparse.csv", "matrix_rownames.csv", "matrix_colnames.csv", "matrix_dims.csv"]
@@ -378,11 +406,126 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     
     return ajm_ap_samples, ajm_cyto_samples
 
+def prepare_and_load_emtab():
+    """
+    Load and prepare EMTAB dataset from preprocessed files, converting gene symbols to Ensembl IDs.
+    Uses mygene to convert gene names, and caches the converted AnnData object as a pickle file.
+    On subsequent runs, loads the converted AnnData from the pickle if it exists.
+    
+    Returns:
+        adata: AnnData object containing gene expression data with Ensembl IDs as var_names,
+               and labels and auxiliary variables in .obs
+    """
+    import pickle
+    import mygene
+
+    data_path = "/labs/Aguiar/SSPA_BRAY/dataset/EMTAB11349/preprocessed"
+    cache_file = os.path.join(data_path, "emtab_ensembl_converted.pkl")
+
+    # If cached converted AnnData exists, load and return it
+    if os.path.exists(cache_file):
+        print(f"Loading cached Ensembl-converted AnnData from {cache_file}")
+        with open(cache_file, "rb") as f:
+            adata = pickle.load(f)
+        print(f"Loaded AnnData with shape: {adata.shape}")
+        return adata
+
+    # Otherwise, load and process the data
+    gene_expression_file = "gene_expression.csv.gz"
+    responses_file = "responses.csv.gz"
+    aux_data_file = "aux_data.csv.gz"
+
+    gene_expression = pd.read_csv(os.path.join(data_path, gene_expression_file), index_col=0, compression='gzip')
+    responses = pd.read_csv(os.path.join(data_path, responses_file), index_col=0, compression='gzip')
+    aux_data = pd.read_csv(os.path.join(data_path, aux_data_file), index_col=0, compression='gzip')
+
+    # Concatenate all three dataframes into a single dataframe
+    combined_data = pd.concat([gene_expression, responses, aux_data], axis=1)
+
+    print("\nCombined dataset shape:", combined_data.shape)
+    print("\nFirst few rows of combined dataset:")
+    print(combined_data.head())
+
+    # Separate gene expression data (X) from labels and auxiliary variables
+    gene_cols = [col for col in combined_data.columns if col not in ["Crohn's disease", "ulcerative colitis", "age", "sex_female"]]
+    X = combined_data[gene_cols]
+    labels = combined_data[["Crohn's disease", "ulcerative colitis"]]
+    aux_vars = combined_data[["age", "sex_female"]]
+
+    # Convert gene symbols to Ensembl IDs using mygene
+    print("Converting gene symbols to Ensembl IDs using mygene...")
+    mg = mygene.MyGeneInfo()
+    # Query in batches for efficiency
+    batch_size = 100
+    gene_symbol_list = list(gene_cols)
+    mapping = {}
+    for i in range(0, len(gene_symbol_list), batch_size):
+        batch = gene_symbol_list[i:i+batch_size]
+        results = mg.querymany(batch, scopes='symbol', fields='ensembl.gene', species='mouse', as_dataframe=True)
+        for symbol in batch:
+            if symbol in results.index:
+                entry = results.loc[symbol]
+                if isinstance(entry, pd.DataFrame):
+                    entry = entry.iloc[0]
+                if pd.notnull(entry.get('ensembl.gene', None)):
+                    # If multiple Ensembl IDs, take the first
+                    ens = entry['ensembl.gene']
+                    if isinstance(ens, list):
+                        mapping[symbol] = ens[0]
+                    else:
+                        mapping[symbol] = ens
+                else:
+                    mapping[symbol] = None
+            else:
+                mapping[symbol] = None
+
+    # Filter out genes that could not be mapped
+    mapped_genes = [g for g in gene_symbol_list if mapping.get(g)]
+    ensembl_ids = [mapping[g] for g in mapped_genes]
+
+    print(f"Number of genes mapped to Ensembl IDs: {len(ensembl_ids)} / {len(gene_symbol_list)}")
+
+    # Subset X to mapped genes and rename columns to Ensembl IDs
+    X_mapped = X[mapped_genes].copy()
+    X_mapped.columns = ensembl_ids
+
+    # Create AnnData object
+    adata = ad.AnnData(X=X_mapped)
+
+    # Add labels as obs
+    adata.obs = labels.copy()
+    adata.obs_names = combined_data.index
+
+    # Add auxiliary variables as obs
+    adata.obs = pd.concat([adata.obs, aux_vars], axis=1)
+
+    # Add Ensembl IDs as var_names
+    adata.var_names = ensembl_ids
+
+    print(f"AnnData object created (Ensembl IDs):")
+    print(f"  - Shape: {adata.shape}")
+    print(f"  - Observations (samples): {adata.n_obs}")
+    print(f"  - Variables (Ensembl genes): {adata.n_vars}")
+    print(f"  - Obs columns: {list(adata.obs.columns)}")
+    print(f"  - First few obs values:")
+    print(adata.obs.head())
+
+    # Save the converted AnnData to cache for future use
+    with open(cache_file, "wb") as f:
+        pickle.dump(adata, f)
+    print(f"Saved Ensembl-converted AnnData to {cache_file}")
+
+    return adata
+
+
+log_memory("Before loading gene annotations")
 gene_annotation_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_FileTransfer/ENS_mouse_geneannotation.csv"
 gene_annotation = pd.read_csv(gene_annotation_path)
 gene_annotation = gene_annotation.set_index('GeneID')
+log_memory("After loading gene annotations")
 
 def filter_protein_coding_genes(adata, gene_annotation):
+    log_memory("Before filtering protein coding genes")
     protein_coding_genes = gene_annotation[gene_annotation['Genetype'] == 'protein_coding'].index
     
     common_genes = np.intersect1d(adata.var_names, protein_coding_genes)
@@ -392,26 +535,78 @@ def filter_protein_coding_genes(adata, gene_annotation):
     
     adata_filtered = adata[:, common_genes].copy()
 
+    log_memory("After filtering protein coding genes")
+    log_array_sizes({
+        'adata.X': adata.X,
+        'adata_filtered.X': adata_filtered.X
+    })
+    
     return adata_filtered
 
 
-def log_normalize_adata(adata, scale_factor=1e4):
-    """Library size normalize and log-transform the counts in an AnnData object."""
+def QCscRNAsizeFactorNormOnly(adata):
+    """Normalize counts in an AnnData object using a median-based size factor per cell (row-wise)."""
+    import numpy as np
     import scipy.sparse as sp
 
     X = adata.X.astype(float)
 
     if sp.issparse(X):
-        library_sizes = np.array(X.sum(axis=1)).reshape(-1, 1)
-        library_sizes[library_sizes == 0] = 1
-        X = X.multiply(1 / library_sizes)
-        X = X.multiply(scale_factor)
-        X.data = np.log1p(X.data)
+        UMI_counts_per_cell = np.array(X.sum(axis=1)).flatten()  # Sum over columns → per row (cell)
     else:
-        library_sizes = X.sum(axis=1, keepdims=True)
-        library_sizes[library_sizes == 0] = 1
-        X = (X / library_sizes) * scale_factor
-        X = np.log1p(X)
+        UMI_counts_per_cell = X.sum(axis=1)
+
+    median_UMI = np.median(UMI_counts_per_cell)
+    scaling_factors = median_UMI / UMI_counts_per_cell
+    scaling_factors[np.isinf(scaling_factors)] = 0  # Avoid inf if dividing by zero
+
+    if sp.issparse(X):
+        scaling_matrix = sp.diags(scaling_factors)
+        X = scaling_matrix @ X  # Multiply from the left: row-wise scaling
+    else:
+        X = X * scaling_factors[:, np.newaxis]  # Broadcast scaling per row
 
     adata.X = X
     return adata
+
+
+def sample_adata(adata, n_cells=None, cell_fraction=None,
+                 n_genes=None, gene_fraction=None, random_state=0):
+    """Return a random subset of the AnnData object.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input dataset.
+    n_cells : int, optional
+        Number of cells to sample.  Mutually exclusive with ``cell_fraction``.
+    cell_fraction : float, optional
+        Fraction of cells to sample.
+    n_genes : int, optional
+        Number of genes to sample.  Mutually exclusive with ``gene_fraction``.
+    gene_fraction : float, optional
+        Fraction of genes to sample.
+    random_state : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    AnnData
+        Subsampled AnnData object.
+    """
+
+    rng = np.random.default_rng(random_state)
+
+    if cell_fraction is not None:
+        n_cells = max(1, int(adata.n_obs * cell_fraction))
+    if n_cells is None or n_cells > adata.n_obs:
+        n_cells = adata.n_obs
+    cell_indices = rng.choice(adata.n_obs, size=n_cells, replace=False)
+
+    if gene_fraction is not None:
+        n_genes = max(1, int(adata.n_vars * gene_fraction))
+    if n_genes is None or n_genes > adata.n_vars:
+        n_genes = adata.n_vars
+    gene_indices = rng.choice(adata.n_vars, size=n_genes, replace=False)
+
+    return adata[cell_indices, :][:, gene_indices].copy()

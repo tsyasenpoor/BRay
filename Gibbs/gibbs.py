@@ -1,6 +1,9 @@
 import numpy as np
 from numpy.random import default_rng
 from scipy.special import expit
+import gc
+import warnings
+from typing import Optional, Union
 
 try:
     import jax
@@ -10,6 +13,23 @@ try:
 except Exception:
     JAX_AVAILABLE = False
 
+# Add memory tracking
+try:
+    import psutil
+    MEMORY_TRACKING = True
+except ImportError:
+    MEMORY_TRACKING = False
+
+def get_memory_usage_mb():
+    """Get memory usage in MB."""
+    if MEMORY_TRACKING:
+        process = psutil.Process()
+        return process.memory_info().rss / (1024 * 1024)  # MB
+    return 0.0
+
+def log_memory(message=""):
+    if MEMORY_TRACKING:
+        print(f"MEMORY [{message}]: {get_memory_usage_mb():.1f} MB")
 
 def _compute_rhat(chains: np.ndarray) -> np.ndarray:
     """Compute Gelman-Rubin R-hat statistic.
@@ -30,7 +50,7 @@ def _compute_rhat(chains: np.ndarray) -> np.ndarray:
     B = n * np.sum((chain_means - grand_mean) ** 2, axis=0) / (m - 1)
     W = chains.var(axis=1, ddof=1).mean(axis=0)
     var_hat = ((n - 1) / n) * W + (1 / n) * B
-    return np.sqrt(var_hat / W)
+    return np.sqrt(var_hat / (W + 1e-12))
 
 
 def _effective_sample_size(chains: np.ndarray) -> np.ndarray:
@@ -43,7 +63,7 @@ def _effective_sample_size(chains: np.ndarray) -> np.ndarray:
     acov_sum = np.zeros_like(var_within)
     for t in range(1, n):
         acov_t = ((chains[:, :-t] - chain_means[:, None]) * (chains[:, t:] - chain_means[:, None])).mean(axis=(0,1))
-        rho_t = acov_t / var_within
+        rho_t = acov_t / (var_within + 1e-12)
         if np.all(rho_t < 0):
             break
         acov_sum += rho_t
@@ -52,8 +72,44 @@ def _effective_sample_size(chains: np.ndarray) -> np.ndarray:
     return ess
 
 
+# Place MemoryEfficientTrace definition above its first use for type checking
+class MemoryEfficientTrace:
+    """Memory-efficient trace storage that only keeps recent samples."""
+    
+    def __init__(self, max_samples=1000, dtype=np.float32):
+        self.max_samples = max_samples
+        self.dtype = dtype
+        self.samples = []
+        self.total_samples = 0
+        
+    def append(self, sample):
+        """Add a new sample, potentially removing old ones."""
+        # Convert to efficient dtype
+        if hasattr(sample, 'astype'):
+            sample = sample.astype(self.dtype)
+        
+        self.samples.append(sample)
+        self.total_samples += 1
+        
+        # Keep only recent samples
+        if len(self.samples) > self.max_samples:
+            self.samples.pop(0)
+    
+    def get_array(self):
+        """Get all stored samples as array."""
+        if not self.samples:
+            return np.array([])
+        return np.array(self.samples, dtype=self.dtype)
+    
+    def get_recent(self, n_samples):
+        """Get the most recent n_samples."""
+        if n_samples >= len(self.samples):
+            return self.get_array()
+        return np.array(self.samples[-n_samples:], dtype=self.dtype)
+
+
 class SpikeSlabGibbsSampler:
-    """Gibbs sampler using a spike-and-slab prior for ``upsilon`` coefficients.
+    """Memory-efficient Gibbs sampler using a spike-and-slab prior for ``upsilon`` coefficients.
 
     This implementation was originally written for experiments without any gene
     program masking.  To support the different experiment configurations used in
@@ -81,22 +137,29 @@ class SpikeSlabGibbsSampler:
         pi_alpha: float = 1.0,
         pi_beta: float = 10.0,
         sigma_gamma_sq: float = 1.0,
-        seed: int | None = None,
-        mask: np.ndarray | None = None,
+        seed: Optional[int] = None,
+        mask: Optional[np.ndarray] = None,
         use_jax: bool = False,
+        memory_efficient: bool = True,
+        trace_max_samples: int = 1000,
+        use_float32: bool = True,
     ) -> None:
         self.use_jax = bool(use_jax and JAX_AVAILABLE)
+        self.memory_efficient = memory_efficient
+        self.trace_max_samples = trace_max_samples
+        self.use_float32 = use_float32
+        
+        # Choose dtype based on memory efficiency setting
+        self.dtype = np.float32 if use_float32 else np.float64
+        
         self.rng = default_rng(seed)
         if self.use_jax:
             self.key = jrandom.PRNGKey(seed or 0)
 
-        self.X = np.asarray(X)
-        self.X_aux = np.asarray(X_aux)
-        self.Y = np.asarray(Y)
-        if self.use_jax:
-            self.X = jnp.asarray(self.X)
-            self.X_aux = jnp.asarray(self.X_aux)
-            self.Y = jnp.asarray(self.Y)
+        # Convert inputs to efficient dtype and handle sparse matrices
+        self.X = self._prepare_input(X)
+        self.X_aux = self._prepare_input(X_aux)
+        self.Y = self._prepare_input(Y)
 
         self.n, self.p = self.X.shape
         self.q = self.X_aux.shape[1]
@@ -105,7 +168,7 @@ class SpikeSlabGibbsSampler:
 
         self.mask = None
         if mask is not None:
-            m = np.asarray(mask)
+            m = np.asarray(mask, dtype=self.dtype)
             if m.shape != (self.p, self.d):
                 raise ValueError(
                     "mask must have shape (p, d) matching (genes, programs)"
@@ -127,6 +190,18 @@ class SpikeSlabGibbsSampler:
         self.sigma_gamma_sq = sigma_gamma_sq
 
         self._init_params()
+        log_memory("After initialization")
+
+    def _prepare_input(self, arr):
+        """Prepare input array with memory-efficient settings."""
+        if hasattr(arr, 'toarray'):  # Sparse matrix
+            # Keep sparse if memory efficient, otherwise convert
+            if self.memory_efficient:
+                return arr
+            else:
+                return arr.toarray().astype(self.dtype)
+        else:
+            return np.asarray(arr, dtype=self.dtype)
 
     # ------------------------------------------------------------------
     def _rng_gamma(self, shape, rate):
@@ -170,19 +245,19 @@ class SpikeSlabGibbsSampler:
         """Initialise latent variables and parameters."""
         self.log_theta = np.log(
             self._rng_gamma(np.ones((self.n, self.d)), np.ones((self.n, self.d))) + 1e-12
-        )
+        ).astype(self.dtype)
         self.log_beta = np.log(
             self._rng_gamma(np.ones((self.p, self.d)), np.ones((self.p, self.d))) + 1e-12
-        )
+        ).astype(self.dtype)
         if self.mask is not None:
             self.log_beta = np.where(self.mask, self.log_beta, -np.inf)
-        self.log_xi = np.log(self._rng_gamma(np.ones(self.n), np.ones(self.n)) + 1e-12)
-        self.log_eta = np.log(self._rng_gamma(np.ones(self.p), np.ones(self.p)) + 1e-12)
+        self.log_xi = np.log(self._rng_gamma(np.ones(self.n), np.ones(self.n)) + 1e-12).astype(self.dtype)
+        self.log_eta = np.log(self._rng_gamma(np.ones(self.p), np.ones(self.p)) + 1e-12).astype(self.dtype)
 
-        self.gamma = self._rng_normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q))
+        self.gamma = self._rng_normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q)).astype(self.dtype)
 
         self.delta = self._rng_binomial(1, self.pi, size=(self.k, self.d))
-        self.upsilon = self._rng_normal(0.0, 0.1, size=(self.k, self.d))
+        self.upsilon = self._rng_normal(0.0, 0.1, size=(self.k, self.d)).astype(self.dtype)
 
         if self.use_jax:
             self.log_theta = jnp.asarray(self.log_theta)
@@ -211,22 +286,34 @@ class SpikeSlabGibbsSampler:
         return np.exp(self.log_eta)
 
     # ------------------------------------------------------------------
-    # Conjugate updates for gamma-distributed parameters
+    # Memory-efficient conjugate updates for gamma-distributed parameters
     def _update_theta(self) -> None:
         exp_beta = np.exp(self.log_beta)
         rate = np.exp(self.log_xi)[:, None] + exp_beta.sum(axis=0)[None, :]
-        shape = self.a + self.X @ exp_beta
+        
+        # Use sparse matrix multiplication if available
+        if hasattr(self.X, 'dot'):
+            shape = self.a + self.X.dot(exp_beta)
+        else:
+            shape = self.a + self.X @ exp_beta
+            
         theta_new = self._rng_gamma(shape, rate)
-        self.log_theta = np.log(theta_new + 1e-12)
+        self.log_theta = np.log(theta_new + 1e-12).astype(self.dtype)
 
     def _update_beta(self) -> None:
         exp_theta = np.exp(self.log_theta)
         rate = np.exp(self.log_eta)[:, None] + exp_theta.sum(axis=0)[None, :]
-        shape = self.c + self.X.T @ exp_theta
+        
+        # Use sparse matrix multiplication if available
+        if hasattr(self.X, 'T') and hasattr(self.X.T, 'dot'):
+            shape = self.c + self.X.T.dot(exp_theta)
+        else:
+            shape = self.c + self.X.T @ exp_theta
+            
         beta_new = self._rng_gamma(shape, rate)
         if self.mask is not None:
             beta_new = np.where(self.mask, beta_new, 0.0)
-        self.log_beta = np.log(beta_new + 1e-12)
+        self.log_beta = np.log(beta_new + 1e-12).astype(self.dtype)
         if self.mask is not None:
             self.log_beta = np.where(self.mask, self.log_beta, -np.inf)
 
@@ -235,14 +322,14 @@ class SpikeSlabGibbsSampler:
         rate = self.b_prime + exp_theta.sum(axis=1)
         shape = self.a_prime + self.a * self.d
         xi_new = self._rng_gamma(np.full(self.n, shape), rate)
-        self.log_xi = np.log(xi_new + 1e-12)
+        self.log_xi = np.log(xi_new + 1e-12).astype(self.dtype)
 
     def _update_eta(self) -> None:
         exp_beta = np.exp(self.log_beta)
         rate = self.d_prime + exp_beta.sum(axis=1)
         shape = self.c_prime + self.c * self.d
         eta_new = self._rng_gamma(np.full(self.p, shape), rate)
-        self.log_eta = np.log(eta_new + 1e-12)
+        self.log_eta = np.log(eta_new + 1e-12).astype(self.dtype)
 
     # ------------------------------------------------------------------
     def _update_gamma(self) -> None:
@@ -255,7 +342,7 @@ class SpikeSlabGibbsSampler:
         gamma_new = self._rng_multivariate_normal(
             np.zeros(self.q), cov, size=self.k
         ) + mean
-        self.gamma = gamma_new
+        self.gamma = gamma_new.astype(self.dtype)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -350,6 +437,7 @@ class SpikeSlabGibbsSampler:
         check_every: int = 50,
         rhat_thresh: float = 1.01,
         ess_thresh: int = 200,
+        save_traces: bool = True,
     ) -> dict:
         """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``.
 
@@ -359,27 +447,55 @@ class SpikeSlabGibbsSampler:
             Total number of Gibbs iterations to perform.
         burn_in : int, optional
             Number of initial iterations to discard from the returned traces.
+        save_traces : bool, optional
+            Whether to save parameter traces (memory intensive).
         """
         if burn_in < 0 or burn_in >= n_iter:
             raise ValueError("burn_in must be non-negative and less than n_iter")
 
-        self.upsilon_trace = []
-        self.delta_trace = []
-        self.gamma_trace = []
-        self.log_beta_trace = []
+        # Initialize memory-efficient trace storage
+        if save_traces:
+            if self.memory_efficient:
+                self.upsilon_trace = MemoryEfficientTrace(max_samples=self.trace_max_samples, dtype=self.dtype)
+                self.delta_trace = MemoryEfficientTrace(max_samples=self.trace_max_samples, dtype=self.dtype)
+                self.gamma_trace = MemoryEfficientTrace(max_samples=self.trace_max_samples, dtype=self.dtype)
+                self.log_beta_trace = MemoryEfficientTrace(max_samples=self.trace_max_samples, dtype=self.dtype)
+            else:
+                self.upsilon_trace = []
+                self.delta_trace = []
+                self.gamma_trace = []
+                self.log_beta_trace = []
+        else:
+            self.upsilon_trace = []
+            self.delta_trace = []
+            self.gamma_trace = []
+            self.log_beta_trace = []
 
         print(f"Running {n_iter} iterations with {burn_in} burn-in...")
+        log_memory("Before sampling")
         
         for t in range(n_iter):
             self.step()
 
-            self.upsilon_trace.append(self.upsilon.copy())
-            self.delta_trace.append(self.delta.copy())
-            self.gamma_trace.append(self.gamma.copy())
-            self.log_beta_trace.append(self.log_beta.copy())
+            if save_traces:
+                if hasattr(self.upsilon_trace, 'append') and callable(getattr(self.upsilon_trace, 'append', None)):
+                    self.upsilon_trace.append(self.upsilon.copy())
+                    self.delta_trace.append(self.delta.copy())
+                    self.gamma_trace.append(self.gamma.copy())
+                    self.log_beta_trace.append(self.log_beta.copy())
+                else:
+                    self.upsilon_trace.append(self.upsilon.copy())
+                    self.delta_trace.append(self.delta.copy())
+                    self.gamma_trace.append(self.gamma.copy())
+                    self.log_beta_trace.append(self.log_beta.copy())
 
             if check_convergence and (t + 1) % check_every == 0 and (t + 1) > burn_in:
-                trace = np.array(self.upsilon_trace[burn_in:])
+                # Get trace for convergence checking
+                if isinstance(self.upsilon_trace, MemoryEfficientTrace):
+                    trace = self.upsilon_trace.get_array()[burn_in:]
+                else:
+                    trace = np.array(self.upsilon_trace[burn_in:])
+                
                 if trace.shape[0] >= 4:
                     half = trace.shape[0] // 2
                     chains = np.stack([trace[:half], trace[-half:]], axis=0)
@@ -395,13 +511,32 @@ class SpikeSlabGibbsSampler:
 
             if (t + 1) % 100 == 0:
                 print(f"  Completed iteration {t + 1}/{n_iter}")
+                if MEMORY_TRACKING:
+                    log_memory(f"Iteration {t + 1}")
+                # Force garbage collection periodically
+                if self.memory_efficient:
+                    gc.collect()
 
-        trace_upsilon = np.array(self.upsilon_trace[burn_in:n_iter])
-        trace_delta = np.array(self.delta_trace[burn_in:n_iter])
-        trace_gamma = np.array(self.gamma_trace[burn_in:n_iter])
-        trace_log_beta = np.array(self.log_beta_trace[burn_in:n_iter])
+        # Convert traces to arrays
+        if save_traces:
+            if isinstance(self.upsilon_trace, MemoryEfficientTrace):
+                trace_upsilon = self.upsilon_trace.get_array()[burn_in:n_iter]
+                trace_delta = self.delta_trace.get_array()[burn_in:n_iter]
+                trace_gamma = self.gamma_trace.get_array()[burn_in:n_iter]
+                trace_log_beta = self.log_beta_trace.get_array()[burn_in:n_iter]
+            else:
+                trace_upsilon = np.array(self.upsilon_trace)[burn_in:n_iter]
+                trace_delta = np.array(self.delta_trace)[burn_in:n_iter]
+                trace_gamma = np.array(self.gamma_trace)[burn_in:n_iter]
+                trace_log_beta = np.array(self.log_beta_trace)[burn_in:n_iter]
+        else:
+            trace_upsilon = np.array([])
+            trace_delta = np.array([])
+            trace_gamma = np.array([])
+            trace_log_beta = np.array([])
 
         print(f"Returning {len(trace_upsilon)} post-burn-in samples")
+        log_memory("After sampling")
 
         return {
             "upsilon": trace_upsilon,

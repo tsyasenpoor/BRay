@@ -445,7 +445,7 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 
     entropy = H_eta + H_beta + H_xi + H_theta + H_gamma + H_upsilon + H_lambda_sq
     
-    elbo = expected_log_joint + entropy
+    elbo = expected_log_joint - entropy
     
     print("\n--- ELBO Breakdown ---")
     print(f"E[log p(eta)]:       {elbo_p_eta:.4f}")
