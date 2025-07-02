@@ -185,6 +185,16 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
             # Normalize and log-transform
             QCscRNAsizeFactorNormOnly(ajm_ap_samples)
             QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
+
+            if sp.issparse(ajm_cyto_samples.X):
+                ajm_cyto_samples.X = ajm_cyto_samples.X.log1p()
+            else:
+                ajm_cyto_samples.X = np.log1p(ajm_cyto_samples.X)
+
+            if sp.issparse(ajm_ap_samples.X):
+                ajm_ap_samples.X = ajm_ap_samples.X.log1p()
+            else:
+                ajm_ap_samples.X = np.log1p(ajm_ap_samples.X)
             
             print("AJM AP Samples distribution:")
             print(ajm_ap_samples.obs['ap'].value_counts())
@@ -341,6 +351,16 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     # Normalize and log-transform
     QCscRNAsizeFactorNormOnly(ajm_ap_samples)
     QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
+
+    if sp.issparse(ajm_cyto_samples.X):
+        ajm_cyto_samples.X = ajm_cyto_samples.X.log1p()
+    else:
+        ajm_cyto_samples.X = np.log1p(ajm_cyto_samples.X)
+
+    if sp.issparse(ajm_ap_samples.X):
+        ajm_ap_samples.X = ajm_ap_samples.X.log1p()
+    else:
+        ajm_ap_samples.X = np.log1p(ajm_ap_samples.X)
 
     # Add dataset identifier to help with cache loading
     ajm_ap_samples.obs['dataset'] = 'ap'
