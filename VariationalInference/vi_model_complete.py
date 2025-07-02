@@ -28,6 +28,10 @@ jax.config.update('jax_platform_name', 'cpu')
 @jax.jit
 def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
     log_phi_unnormalized = E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]
+    # Clip values to avoid extreme exponentials in the softmax which can cause
+    # numerical overflow and eventually trigger floating point errors during JAX
+    # JIT execution.
+    log_phi_unnormalized = jnp.clip(log_phi_unnormalized, -20.0, 20.0)
     phi_batch = jax.nn.softmax(log_phi_unnormalized, axis=2)
     
     alpha_beta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=0)
