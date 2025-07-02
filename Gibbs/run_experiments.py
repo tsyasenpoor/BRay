@@ -260,27 +260,64 @@ def run_sampler_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
 
     train_df = pd.DataFrame({
         "sample_id": ids_train,
-        "true_label": y_train.reshape(-1),
-        "probability": np.round(np.array(probs_tr).reshape(-1), 4),
-        "predicted_label": (np.array(probs_tr) >= 0.5).astype(int).reshape(-1),
+        "true_label": y_train.reshape(-1) if len(y_train.shape) == 2 and y_train.shape[1] == 1 else y_train,
+        "probability": np.round(np.array(probs_tr).reshape(-1), 4) if len(y_train.shape) <= 1 or y_train.shape[1] == 1 else np.round(np.array(probs_tr), 4),
+        "predicted_label": (np.array(probs_tr) >= 0.5).astype(int).reshape(-1) if len(y_train.shape) <= 1 or y_train.shape[1] == 1 else (np.array(probs_tr) >= 0.5).astype(int),
         "cyto_seed_score": sc_train,
     })
 
     val_df = pd.DataFrame({
         "sample_id": ids_val,
-        "true_label": y_val.reshape(-1),
-        "probability": np.round(np.array(probs_val).reshape(-1), 4),
-        "predicted_label": (np.array(probs_val) >= 0.5).astype(int).reshape(-1),
+        "true_label": y_val.reshape(-1) if len(y_val.shape) == 2 and y_val.shape[1] == 1 else y_val,
+        "probability": np.round(np.array(probs_val).reshape(-1), 4) if len(y_val.shape) <= 1 or y_val.shape[1] == 1 else np.round(np.array(probs_val), 4),
+        "predicted_label": (np.array(probs_val) >= 0.5).astype(int).reshape(-1) if len(y_val.shape) <= 1 or y_val.shape[1] == 1 else (np.array(probs_val) >= 0.5).astype(int),
         "cyto_seed_score": sc_val,
     })
 
     test_df = pd.DataFrame({
         "sample_id": ids_test,
-        "true_label": y_test.reshape(-1),
-        "probability": np.round(np.array(probs_test).reshape(-1), 4),
-        "predicted_label": (np.array(probs_test) >= 0.5).astype(int).reshape(-1),
+        "true_label": y_test.reshape(-1) if len(y_test.shape) == 2 and y_test.shape[1] == 1 else y_test,
+        "probability": np.round(np.array(probs_test).reshape(-1), 4) if len(y_test.shape) <= 1 or y_test.shape[1] == 1 else np.round(np.array(probs_test), 4),
+        "predicted_label": (np.array(probs_test) >= 0.5).astype(int).reshape(-1) if len(y_test.shape) <= 1 or y_test.shape[1] == 1 else (np.array(probs_test) >= 0.5).astype(int),
         "cyto_seed_score": sc_test,
     })
+
+    if len(y_train.shape) > 1 and y_train.shape[1] > 1:
+        train_dfs = []
+        val_dfs = []
+        test_dfs = []
+        for k in range(y_train.shape[1]):
+            train_df_k = pd.DataFrame({
+                "sample_id": ids_train,
+                "true_label": y_train[:, k],
+                "probability": np.round(np.array(probs_tr)[:, k], 4),
+                "predicted_label": (np.array(probs_tr)[:, k] >= 0.5).astype(int),
+                "class": k,
+                "cyto_seed_score": sc_train,
+            })
+            val_df_k = pd.DataFrame({
+                "sample_id": ids_val,
+                "true_label": y_val[:, k],
+                "probability": np.round(np.array(probs_val)[:, k], 4),
+                "predicted_label": (np.array(probs_val)[:, k] >= 0.5).astype(int),
+                "class": k,
+                "cyto_seed_score": sc_val,
+            })
+            test_df_k = pd.DataFrame({
+                "sample_id": ids_test,
+                "true_label": y_test[:, k],
+                "probability": np.round(np.array(probs_test)[:, k], 4),
+                "predicted_label": (np.array(probs_test)[:, k] >= 0.5).astype(int),
+                "class": k,
+                "cyto_seed_score": sc_test,
+            })
+            train_dfs.append(train_df_k)
+            val_dfs.append(val_df_k)
+            test_dfs.append(test_df_k)
+
+        train_df = pd.concat(train_dfs)
+        val_df = pd.concat(val_dfs)
+        test_df = pd.concat(test_dfs)
 
     results = {
         "data_info": {
@@ -591,11 +628,19 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
                                   seed=None, max_iter=100, burn_in=0):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
-    Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-    X = adata.X  
+    if dataset_name == "emtab":
+        if label_col == "both_labels":
+            Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
+        else:
+            Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+        x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
+    else:
+        Y = adata.obs[label_col].values.astype(float).reshape(-1,1)
+        x_aux = np.ones((adata.shape[0],1))
+
+    X = adata.X
     var_names = list(adata.var_names)
-    
-    x_aux = np.ones((X.shape[0],1)) 
+
     sample_ids = adata.obs.index.tolist()
     
     log_array_sizes({
@@ -714,11 +759,19 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     print(f"\nRunning pathway-initialized experiment on {dataset_name}, label={label_col}")
     print(f"This will initialize gene programs with pathway information, then let them evolve freely")
     
-    Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-    X = adata.X  
+    if dataset_name == "emtab":
+        if label_col == "both_labels":
+            Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
+        else:
+            Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+        x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
+    else:
+        Y = adata.obs[label_col].values.astype(float).reshape(-1,1)
+        x_aux = np.ones((adata.shape[0],1))
+
+    X = adata.X
     var_names = list(adata.var_names)
-    
-    x_aux = np.ones((X.shape[0],1)) 
+
     sample_ids = adata.obs.index.tolist()
     
     log_array_sizes({
