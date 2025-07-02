@@ -207,3 +207,7 @@ VariationalInference/__pycache__/vi_model_complete.cpython-311.pyc
 VariationalInference/__pycache__/data.cpython-311.pyc
 Gibbs/__pycache__/gibbs.cpython-311.pyc
 Gibbs/__pycache__/data.cpython-311.pyc
+gibbs_unmasked_9213305.out
+Gibbs/__pycache__/data.cpython-311.pyc
+Gibbs/__pycache__/run_experiments.cpython-311.pyc
+gibbs_unmasked_9213305.err
