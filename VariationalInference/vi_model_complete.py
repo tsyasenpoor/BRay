@@ -38,6 +38,19 @@ def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
     alpha_theta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=1)
     return alpha_beta_batch_update, alpha_theta_batch_update
 
+def sanitize_q_params(params):
+    """Ensure variational parameters remain finite to avoid hard crashes."""
+    sanitized = {}
+    for k, v in params.items():
+        if isinstance(v, jnp.ndarray):
+            arr = jnp.nan_to_num(v, nan=0.0, posinf=1e6, neginf=-1e6)
+            if k.startswith(("alpha", "omega", "gig")) or k.startswith("Sigma"):
+                arr = jnp.clip(arr, 1e-6, 1e6)
+            sanitized[k] = arr
+        else:
+            sanitized[k] = v
+    return sanitized
+
 @jax.jit
 def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
                                   gig_a_ups, gig_b_ups_old,
@@ -276,7 +289,7 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
         "gig_b_ups": gig_b_ups_new,
     }
 
-    return q_params_new
+    return sanitize_q_params(q_params_new)
 
 def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     
@@ -505,6 +518,7 @@ def run_variational_inference(x_data, y_data, x_aux, hyperparams,
         
         # 1. Update all variational parameters
         q_params = update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=mask)
+        q_params = sanitize_q_params(q_params)
         
         # 2. Compute the ELBO to monitor convergence
         elbo_val = compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=mask)
