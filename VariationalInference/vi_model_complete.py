@@ -229,44 +229,33 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     if using_mask:
         alpha_beta_new = alpha_beta_new * mask
 
-    # --- 5. RESTRUCTURED & STABILIZED SEQUENTIAL UPDATES for rate and hyperprior parameters ---
-    print("Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...")
+    # --- 5. STABILIZED PARALLEL UPDATES for rate and hyperprior parameters ---
+    print("Updating rate (omega) and hyperprior (eta, xi) parameters...")
 
-    # Update hyperprior for beta (eta) first
-    # This update only depends on E_beta, which we will compute with its new alpha and old omega
-    E_beta_temp_for_eta = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
+    # Compute expectations using OLD rate parameters
+    E_beta_old = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
+    E_theta_old = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
     if using_mask:
-        E_beta_temp_for_eta = E_beta_temp_for_eta * mask
-        
+        E_beta_old = E_beta_old * mask
+
+    # Update hyperpriors (eta, xi)
     alpha_eta_new = c_prime + c * jnp.sum(mask, axis=1) if using_mask else c_prime + c * d
-    omega_eta_new = jnp.sum(E_beta_temp_for_eta, axis=1) + (c_prime / d_prime)
-    omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e6) # SAFEGUARD: Clip to prevent extreme values
-    E_eta_new = alpha_eta_new / omega_eta_new # Use new omega_eta for expectation
-
-    # Now update omega_beta using the NEW E_eta and an E_theta based on new alpha_theta
-    E_theta_temp_for_beta = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
-    omega_beta_new = E_eta_new[:, None] + jnp.sum(E_theta_temp_for_beta, axis=0)[None, :]
-    omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e6) # SAFEGUARD: Clip
-
-    # --- Now, do the same for the theta side ---
-
-    # Update hyperprior for theta (xi) first
-    # This update depends on E_theta, which we calculate with new alpha and old omega
-    E_theta_temp_for_xi = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
+    omega_eta_new = jnp.sum(E_beta_old, axis=1) + (c_prime / d_prime)
+    E_eta_new = alpha_eta_new / jnp.maximum(omega_eta_new, 1e-10)
 
     alpha_xi_new = a_prime + a * d
-    omega_xi_new = jnp.sum(E_theta_temp_for_xi, axis=1) + (a_prime / b_prime)
-    omega_xi_new = jnp.clip(omega_xi_new, 1e-6, 1e6) # SAFEGUARD: Clip
-    E_xi_new = alpha_xi_new / omega_xi_new # Use new omega_xi for expectation
+    omega_xi_new = jnp.sum(E_theta_old, axis=1) + (a_prime / b_prime)
+    E_xi_new = alpha_xi_new / jnp.maximum(omega_xi_new, 1e-10)
 
-    # CRITICAL FIX: Update omega_theta using the NEW E_xi and an E_beta calculated
-    # from the NEW alpha_beta and the NEW omega_beta.
-    E_beta_new = alpha_beta_new / omega_beta_new # Use the just-updated omega_beta_new
-    if using_mask:
-        E_beta_new = E_beta_new * mask
-        
-    omega_theta_new = E_xi_new[:, None] + jnp.sum(E_beta_new, axis=0)[None, :]
-    omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e6) # SAFEGUARD: Clip
+    # Update rate parameters using the consistent old expectations
+    omega_beta_new = E_eta_new[:, None] + jnp.sum(E_theta_old, axis=0)[None, :]
+    omega_theta_new = E_xi_new[:, None] + jnp.sum(E_beta_old, axis=0)[None, :]
+
+    # SAFEGUARDS against extreme values
+    omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e6)
+    omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e6)
+    omega_xi_new = jnp.clip(omega_xi_new, 1e-6, 1e6)
+    omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e6)
 
     # --- 6. Assemble the new parameter dictionary (no change) ---
     q_params_new = {
