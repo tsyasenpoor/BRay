@@ -10,7 +10,7 @@ from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear
 # Log initial memory
 print(f"Initial memory usage: {get_memory_usage():.2f} MB")
 
-from vi_model_complete import run_model_and_evaluate
+from run_experiments import run_sampler_and_evaluate
 
 log_memory("Before loading data files")
 
