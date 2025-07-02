@@ -400,7 +400,9 @@ class SpikeSlabGibbsSampler:
         log_p_curr = self._log_posterior_upsilon_all(current)
         log_p_prop = self._log_posterior_upsilon_all(proposal)
         log_accept = log_p_prop - log_p_curr
-        accept = (log_accept >= 0) | (self._rng_uniform(size=self.k) < np.exp(log_accept))
+        # Use logarithmic comparison to avoid overflow in exp
+        rand_log = np.log(self._rng_uniform(size=self.k))
+        accept = (log_accept >= 0) | (rand_log < log_accept)
         self.upsilon = np.where(accept[:, None], proposal, current)
 
     def _update_pi(self) -> None:

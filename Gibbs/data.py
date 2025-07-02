@@ -179,8 +179,8 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
             print(f"Successfully loaded cached AnnData object with shape: {adata.shape}")
             
             # Extract the dataset splits
-            ajm_ap_samples = adata[adata.obs['dataset'] == 'ap']
-            ajm_cyto_samples = adata[adata.obs['dataset'] == 'cyto']
+            ajm_ap_samples = adata[adata.obs['dataset'] == 'ap'].copy()
+            ajm_cyto_samples = adata[adata.obs['dataset'] == 'cyto'].copy()
 
             # Normalize and log-transform
             QCscRNAsizeFactorNormOnly(ajm_ap_samples)
@@ -283,6 +283,8 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     # - var_names (columns) should be gene names
     ajm_adata.obs_names = col_names  # Cell names as observation names
     ajm_adata.var_names = row_names  # Gene names as variable names
+    ajm_adata.obs_names_make_unique()
+    ajm_adata.var_names_make_unique()
     
     log_memory("After creating AnnData object")
     
@@ -323,7 +325,7 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     print(f"Number of common cells: {len(common_cells_ajm)}")
     
     # Subset to common cells
-    ajm_adata = ajm_adata[common_cells_ajm]
+    ajm_adata = ajm_adata[common_cells_ajm].copy()
     ajm_features = ajm_features.loc[common_cells_ajm]
     
     # Add metadata to AnnData object
@@ -335,8 +337,8 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
         ajm_adata.var['gene_symbols'] = ajm_adata.var_names
     
     # Create subset AnnData objects for different analyses
-    ajm_ap_samples = ajm_adata[ajm_adata.obs['ap'].isin([0,1])]
-    ajm_cyto_samples = ajm_adata[ajm_adata.obs['cyto'].isin([0,1])]
+    ajm_ap_samples = ajm_adata[ajm_adata.obs['ap'].isin([0,1])].copy()
+    ajm_cyto_samples = ajm_adata[ajm_adata.obs['cyto'].isin([0,1])].copy()
 
     # Normalize and log-transform
     QCscRNAsizeFactorNormOnly(ajm_ap_samples)
@@ -495,12 +497,14 @@ def prepare_and_load_emtab():
     # Add labels as obs
     adata.obs = labels.copy()
     adata.obs_names = combined_data.index
+    adata.obs_names_make_unique()
 
     # Add auxiliary variables as obs
     adata.obs = pd.concat([adata.obs, aux_vars], axis=1)
 
     # Add Ensembl IDs as var_names
     adata.var_names = ensembl_ids
+    adata.var_names_make_unique()
 
     print(f"AnnData object created (Ensembl IDs):")
     print(f"  - Shape: {adata.shape}")
@@ -548,6 +552,9 @@ def QCscRNAsizeFactorNormOnly(adata):
     """Normalize counts in an AnnData object using a median-based size factor per cell (row-wise)."""
     import numpy as np
     import scipy.sparse as sp
+
+    if adata.is_view:
+        adata = adata.copy()
 
     X = adata.X.astype(float)
 
