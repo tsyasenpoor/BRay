@@ -15,13 +15,43 @@ from jax import random
 from joblib import Parallel, delayed
 
 
+def _optimise_theta_worker(i: int, theta_i: np.ndarray, xi_i: float,
+                           z_i: np.ndarray, beta: np.ndarray,
+                           gamma: np.ndarray, upsilon: np.ndarray,
+                           X_aux_i: np.ndarray, Y_i: np.ndarray,
+                           alpha_theta: float) -> np.ndarray:
+    """Standalone worker for parallel theta updates."""
+
+    def log_likelihood_bernoulli(y: np.ndarray, logits: np.ndarray) -> float:
+        log_p1 = log_expit(logits)
+        log_p0 = log_expit(-logits)
+        return np.sum(y * log_p1 + (1 - y) * log_p0)
+
+    def log_posterior_theta_i(theta_i_vec: np.ndarray) -> float:
+        log_prior_gamma = np.sum(
+            gamma_dist.logpdf(theta_i_vec, a=alpha_theta, scale=1.0 / xi_i)
+        )
+        with np.errstate(divide="ignore"):
+            log_lik_poisson = np.sum(
+                z_i * np.log(beta) - beta * theta_i_vec[:, np.newaxis].T
+            )
+        logits = X_aux_i @ gamma.T + theta_i_vec @ upsilon.T
+        log_lik_logistic = log_likelihood_bernoulli(Y_i, logits)
+        return log_prior_gamma + log_lik_poisson + log_lik_logistic
+
+    def objective_func(theta_i_vec: np.ndarray) -> float:
+        if np.any(theta_i_vec <= 0):
+            return np.inf
+        return -log_posterior_theta_i(theta_i_vec)
+
+    result = minimize(fun=objective_func, x0=theta_i, method="Nelder-Mead")
+    return result.x if result.success else theta_i
+
+
 def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
                            upsilon_k: np.ndarray, X_aux: np.ndarray,
                            Y_k: np.ndarray, sigma_gamma_sq: float) -> np.ndarray:
     """Standalone worker for parallel gamma updates."""
-
-    # Center theta for the logistic regression component
-    theta_centered = theta - np.mean(theta, axis=0)
 
     def log_likelihood_bernoulli(y: np.ndarray, logits: np.ndarray) -> float:
         log_p1 = log_expit(logits)
@@ -31,7 +61,7 @@ def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
     def log_posterior_gamma_k(gamma_k_vec: np.ndarray) -> float:
         log_prior = norm_dist.logpdf(gamma_k_vec, 0,
                                      np.sqrt(sigma_gamma_sq)).sum()
-        logits = X_aux @ gamma_k_vec + theta_centered @ upsilon_k
+        logits = X_aux @ gamma_k_vec + theta @ upsilon_k
         log_lik = log_likelihood_bernoulli(Y_k, logits)
         return log_prior + log_lik
 
@@ -40,6 +70,35 @@ def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
 
     result = minimize(fun=objective_func, x0=gamma_k, method="Nelder-Mead")
     return result.x if result.success else gamma_k
+
+
+def _optimise_w_upsilon_worker(k: int, w_upsilon_k: np.ndarray, s_upsilon_k: np.ndarray,
+                               theta: np.ndarray, gamma_k: np.ndarray,
+                               X_aux: np.ndarray, Y_k: np.ndarray,
+                               sigma_slab_sq: float) -> np.ndarray:
+    """Standalone worker for parallel w_upsilon updates."""
+
+    def log_likelihood_bernoulli(y: np.ndarray, logits: np.ndarray) -> float:
+        log_p1 = log_expit(logits)
+        log_p0 = log_expit(-logits)
+        return np.sum(y * log_p1 + (1 - y) * log_p0)
+
+    def log_posterior_w_k(w_vec: np.ndarray) -> float:
+        log_prior = norm_dist.logpdf(w_vec, 0, np.sqrt(sigma_slab_sq)).sum()
+        upsilon_k_vec = s_upsilon_k * w_vec
+        logits = X_aux @ gamma_k + theta @ upsilon_k_vec
+        log_lik = log_likelihood_bernoulli(Y_k, logits)
+        return log_prior + log_lik
+
+    if np.any(s_upsilon_k == 1):
+        def objective_func(w_vec: np.ndarray) -> float:
+            return -log_posterior_w_k(w_vec)
+
+        result = minimize(fun=objective_func, x0=w_upsilon_k, method="BFGS")
+        return result.x if result.success else w_upsilon_k
+    else:
+        rng = default_rng()
+        return rng.normal(0.0, np.sqrt(sigma_slab_sq), size=s_upsilon_k.shape[0])
 
 class SpikeSlabGibbsSampler:
 
@@ -160,20 +219,22 @@ class SpikeSlabGibbsSampler:
     def _update_theta(self) -> None:
         """Update theta using Laplace Approximation in parallel."""
 
-        def optimise_single(i: int) -> np.ndarray:
-            def objective_func(theta_i):
-                if np.any(theta_i <= 0):
-                    return np.inf
-                return -self._log_posterior_theta_i(i, theta_i)
-
-            result = minimize(
-                fun=objective_func,
-                x0=self.theta[i],
-                method="Nelder-Mead",
+        tasks = [
+            delayed(_optimise_theta_worker)(
+                i,
+                self.theta[i],
+                self.xi[i],
+                self.z[i, :, :],
+                self.beta,
+                self.gamma,
+                self.upsilon,
+                self.X_aux[i],
+                self.Y[i],
+                self.alpha_theta,
             )
-            return result.x if result.success else self.theta[i]
-
-        results = Parallel(n_jobs=-1)(delayed(optimise_single)(i) for i in range(self.n))
+            for i in range(self.n)
+        ]
+        results = Parallel(n_jobs=-1)(tasks)
         self.theta = np.asarray(results)
 
     def _log_posterior_gamma_k(self, k: int, gamma_k: np.ndarray) -> float:
@@ -202,10 +263,9 @@ class SpikeSlabGibbsSampler:
         self.gamma = np.asarray(results)
 
     def _update_s_upsilon(self) -> None:
-        theta_centered = self.theta - np.mean(self.theta, axis=0)
         for k in range(self.k):
             logits_0 = self.X_aux @ self.gamma[k]  # Logits when upsilon_k=0
-            logits_1 = logits_0 + theta_centered @ self.w_upsilon[k]  # Logits when upsilon_k=w_k
+            logits_1 = logits_0 + self.theta @ self.w_upsilon[k]  # Logits when upsilon_k=w_k
             log_post_1 = np.log(self.pi_upsilon) + self._log_likelihood_bernoulli(self.Y[:, k], logits_1)
             log_post_0 = np.log(1 - self.pi_upsilon) + self._log_likelihood_bernoulli(self.Y[:, k], logits_0)
             
@@ -215,25 +275,27 @@ class SpikeSlabGibbsSampler:
 
     def _log_posterior_w_upsilon_k(self, k: int, w_upsilon_k: np.ndarray) -> float:
         """Calculate log posterior for a single w_upsilon_k vector."""
-        theta_centered = self.theta - np.mean(self.theta, axis=0)
         log_prior = norm_dist.logpdf(w_upsilon_k, 0, np.sqrt(self.sigma_slab_sq)).sum()
         upsilon_k = self.s_upsilon[k] * w_upsilon_k
-        logits = self.X_aux @ self.gamma[k] + theta_centered @ upsilon_k
+        logits = self.X_aux @ self.gamma[k] + self.theta @ upsilon_k
         log_lik = self._log_likelihood_bernoulli(self.Y[:, k], logits)
         return log_prior + log_lik
 
     def _update_w_upsilon(self) -> None:
-        def optimise_single(k: int) -> np.ndarray:
-            if np.any(self.s_upsilon[k] == 1):
-                def objective_func(w_upsilon_k):
-                    return -self._log_posterior_w_upsilon_k(k, w_upsilon_k)
-
-                result = minimize(fun=objective_func, x0=self.w_upsilon[k], method="BFGS")
-                return result.x if result.success else self.w_upsilon[k]
-            else:
-                return self.rng.normal(0.0, np.sqrt(self.sigma_slab_sq), size=self.d)
-
-        results = Parallel(n_jobs=-1)(delayed(optimise_single)(k) for k in range(self.k))
+        tasks = [
+            delayed(_optimise_w_upsilon_worker)(
+                k,
+                self.w_upsilon[k],
+                self.s_upsilon[k],
+                self.theta,
+                self.gamma[k],
+                self.X_aux,
+                self.Y[:, k],
+                self.sigma_slab_sq,
+            )
+            for k in range(self.k)
+        ]
+        results = Parallel(n_jobs=-1)(tasks)
         self.w_upsilon = np.asarray(results)
 
     
