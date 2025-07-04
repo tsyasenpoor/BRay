@@ -243,3 +243,8 @@ Gibbs/minimal_test_results/results.pkl
 Gibbs/minimal_test_results/test_predictions.csv.gz
 Gibbs/minimal_test_results/train_predictions.csv.gz
 Gibbs/minimal_test_results/val_predictions.csv.gz
+Gibbs/test_results/test_emtab_test_unmasked_drgp_matrix.csv.gz
+Gibbs/test_results/test_emtab_test_unmasked_results.pkl
+Gibbs/test_results/test_emtab_test_unmasked_test_predictions.csv.gz
+Gibbs/test_results/test_emtab_test_unmasked_train_predictions.csv.gz
+Gibbs/test_results/test_emtab_test_unmasked_val_predictions.csv.gz
