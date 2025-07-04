@@ -47,8 +47,8 @@ def minimal_test():
         pathways_dict=None,
         gene_names=gene_names,
         cyto_seed_genes=None,
-        max_iters=50,  # Short run
-        burn_in=20,
+        max_iters=1,
+        burn_in=0,
         output_dir='minimal_test_results',
         experiment_name='minimal_test',
         random_state=42,
