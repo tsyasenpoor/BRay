@@ -1,10 +1,11 @@
 import numpy as np
-from numpy.random import default_rng
-from scipy.special import expit
-
+from numpy.random import default_rng, Generator
+from scipy.special import expit, gammaln, logsumexp, log_expit
+from scipy.optimize import minimize
+from scipy.stats import norm as norm_dist
+from scipy.stats import gamma as gamma_dist
 
 class SpikeSlabGibbsSampler:
-    """Gibbs sampler using a spike-and-slab prior for ``upsilon`` coefficients."""
 
     def __init__(
         self,
@@ -13,169 +14,181 @@ class SpikeSlabGibbsSampler:
         X_aux: np.ndarray,
         n_programs: int,
         *,
-        a: float = 0.3,
-        a_prime: float = 0.3,
-        b_prime: float = 0.3,
-        c: float = 0.3,
-        c_prime: float = 0.3,
-        d_prime: float = 0.3,
-        tau1_sq: float = 1.0,
-        tau0_sq: float = 1e-4,
-        pi: float = 0.2,
+        alpha_theta: float = 0.3,
+        alpha_beta: float = 0.3,
+        alpha_xi: float = 0.3,
+        alpha_eta: float = 0.3,
+        lambda_xi: float = 0.3,
+        lambda_eta: float = 0.3,
+        pi_upsilon: float = 0.5,
+        sigma_slab_sq: float = 1.0,
         sigma_gamma_sq: float = 1.0,
         seed: int | None = None,
     ) -> None:
-        self.rng = default_rng(seed)
-
-        self.X = np.asarray(X)
+        self.rng: Generator = default_rng(seed)
+        self.X = np.asarray(X, dtype=np.int32)
+        self.Y = np.asarray(Y, dtype=np.int32)
         self.X_aux = np.asarray(X_aux)
-        self.Y = np.asarray(Y)
-
         self.n, self.p = self.X.shape
-        self.q = self.X_aux.shape[1]
         self.k = self.Y.shape[1]
         self.d = n_programs
-
-        # Hyperparameters
-        self.a = a
-        self.a_prime = a_prime
-        self.b_prime = b_prime
-        self.c = c
-        self.c_prime = c_prime
-        self.d_prime = d_prime
-        self.tau1_sq = tau1_sq
-        self.tau0_sq = tau0_sq
-        self.pi = pi
+        self.q = self.X_aux.shape[1]
+        self.alpha_theta = alpha_theta
+        self.alpha_beta = alpha_beta
+        self.alpha_xi = alpha_xi
+        self.alpha_eta = alpha_eta
+        self.lambda_xi = lambda_xi
+        self.lambda_eta = lambda_eta
+        self.pi_upsilon = pi_upsilon
+        self.sigma_slab_sq = sigma_slab_sq
         self.sigma_gamma_sq = sigma_gamma_sq
-
         self._init_params()
 
     # ------------------------------------------------------------------
     def _init_params(self) -> None:
         """Initialise latent variables and parameters."""
-        self.theta = self.rng.gamma(1.0, 1.0, size=(self.n, self.d))
-        self.beta = self.rng.gamma(1.0, 1.0, size=(self.p, self.d))
-        self.xi = self.rng.gamma(1.0, 1.0, size=self.n)
-        self.eta = self.rng.gamma(1.0, 1.0, size=self.p)
-
-        self.gamma = self.rng.normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q))
-
-        self.delta = self.rng.binomial(1, self.pi, size=(self.k, self.d))
-        self.upsilon = self.rng.normal(0.0, 0.1, size=(self.k, self.d))
-
-    # ------------------------------------------------------------------
-    # Conjugate updates for gamma-distributed parameters
-    def _update_theta(self) -> None:
-        theta_new = np.zeros_like(self.theta)
+        self.xi = self.rng.gamma(self.alpha_xi, scale=1.0/self.lambda_xi, size=self.n)
+        self.eta = self.rng.gamma(self.alpha_eta, scale=1.0/self.lambda_eta, size=self.p)
+        self.theta = np.zeros((self.n, self.d))
         for i in range(self.n):
-            for l in range(self.d):
-                rate = self.xi[i] + self.beta[:, l].sum()
-                shape = self.a + np.dot(self.X[i], self.beta[:, l])
-                theta_new[i, l] = self.rng.gamma(shape, 1.0 / rate)
-        self.theta = theta_new
-
-    def _update_beta(self) -> None:
-        beta_new = np.zeros_like(self.beta)
+            self.theta[i, :] = self.rng.gamma(self.alpha_theta, scale=1.0/self.xi[i], size=self.d)
+        self.beta = np.zeros((self.p, self.d))
         for j in range(self.p):
-            for l in range(self.d):
-                rate = self.eta[j] + self.theta[:, l].sum()
-                shape = self.c + np.dot(self.X[:, j], self.theta[:, l])
-                beta_new[j, l] = self.rng.gamma(shape, 1.0 / rate)
-        self.beta = beta_new
+            self.beta[j, :] = self.rng.gamma(self.alpha_beta, scale=1.0/self.eta[j], size=self.d)
+        self.gamma = self.rng.normal(0.0, np.sqrt(self.sigma_gamma_sq), size=(self.k, self.q))
+        self.s_upsilon = self.rng.binomial(1, self.pi_upsilon, size=(self.k, self.d))
+        self.w_upsilon = self.rng.normal(0.0, np.sqrt(self.sigma_slab_sq), size=(self.k, self.d))
+        self.upsilon = self.s_upsilon * self.w_upsilon
+        self.z = np.zeros((self.n, self.p, self.d), dtype=np.int32)
+        self._update_latent_counts_z()
 
-    def _update_xi(self) -> None:
-        xi_new = np.zeros_like(self.xi)
+    def _update_latent_counts_z(self) -> None:
+        """Sample latent counts z_ijl in log-space for numerical stability."""
+        with np.errstate(divide='ignore'): # Ignore log(0) warnings
+            log_theta = np.log(self.theta)
+            log_beta = np.log(self.beta)
+
+        log_rates = log_theta[:, np.newaxis, :] + log_beta[np.newaxis, :, :]
+        log_total_rates = logsumexp(log_rates, axis=2)
+        log_probs = log_rates - log_total_rates[..., np.newaxis]
+        probs = np.exp(log_probs)
         for i in range(self.n):
-            rate = self.b_prime + self.theta[i].sum()
-            shape = self.a_prime + self.a * self.d
-            xi_new[i] = self.rng.gamma(shape, 1.0 / rate)
-        self.xi = xi_new
+            for j in range(self.p):
+                if self.X[i, j] > 0:
+                    self.z[i, j, :] = self.rng.multinomial(n=self.X[i, j], pvals=probs[i, j, :])
+                else:
+                    self.z[i, j, :] = 0
+
+    # Closed form updates for beta, xi, eta
+    def _update_beta(self) -> None:
+        """Update beta_jl. This calculation does not require log-space."""
+        z_sum_over_i = np.sum(self.z, axis=0)
+        shape = self.alpha_beta + z_sum_over_i
+        rate = self.eta[:, np.newaxis] + np.sum(self.theta, axis=0)
+        self.beta = self.rng.gamma(shape, scale=1.0 / rate)
 
     def _update_eta(self) -> None:
-        eta_new = np.zeros_like(self.eta)
-        for j in range(self.p):
-            rate = self.d_prime + self.beta[j].sum()
-            shape = self.c_prime + self.c * self.d
-            eta_new[j] = self.rng.gamma(shape, 1.0 / rate)
-        self.eta = eta_new
+        """Update eta_j. This calculation does not require log-space."""
+        shape = self.alpha_eta + self.d * self.alpha_beta
+        rate = self.lambda_eta + np.sum(self.beta, axis=1)
+        self.eta = self.rng.gamma(shape, scale=1.0 / rate)
 
-    # ------------------------------------------------------------------
-    def _update_gamma(self) -> None:
-        gamma_new = np.zeros_like(self.gamma)
-        XTX = self.X_aux.T @ self.X_aux
-        precision = XTX / self.sigma_gamma_sq + np.eye(self.q)
-        cov = np.linalg.inv(precision)
-        for k in range(self.k):
-            logits = self.theta @ self.upsilon[k] + self.X_aux @ self.gamma[k]
-            z = self.Y[:, k] - expit(logits)
-            mean = cov @ self.X_aux.T @ z / self.sigma_gamma_sq
-            gamma_new[k] = self.rng.multivariate_normal(mean, cov)
-        self.gamma = gamma_new
+    def _update_xi(self) -> None:
+        """Update xi_i. This calculation does not require log-space."""
+        shape = self.alpha_xi + self.d * self.alpha_theta
+        rate = self.lambda_xi + np.sum(self.theta, axis=1)
+        self.xi = self.rng.gamma(shape, scale=1.0 / rate)
 
-    # ------------------------------------------------------------------
     @staticmethod
-    def _log_likelihood(logits: np.ndarray, y: np.ndarray) -> float:
-        """Stable Bernoulli log likelihood under the logit parameterisation."""
-        return float(np.sum(
-            y * logits - np.where(
-                logits > 0,
-                logits + np.log1p(np.exp(-logits)),
-                np.log1p(np.exp(logits)),
+    def _log_likelihood_bernoulli(y: np.ndarray, logits: np.ndarray) -> float:
+        """Numerically stable Bernoulli log-likelihood using log_expit."""
+        log_p1 = log_expit(logits)  # log(sigmoid(logits))
+        log_p0 = log_expit(-logits) # log(1 - sigmoid(logits))
+        return np.sum(y * log_p1 + (1 - y) * log_p0)
+
+    # Non-conjugate updates for theta, gamma, upsilon via Laplace Approximation
+
+    def _log_posterior_theta_i(self, i: int, theta_i: np.ndarray) -> float:
+        """Calculate log posterior for a single theta_i vector."""
+        log_prior_gamma = np.sum(gamma_dist.logpdf(theta_i, a=self.alpha_theta, scale=1.0/self.xi[i]))
+        with np.errstate(divide='ignore'):
+            log_lik_poisson = np.sum(self.z[i, :, :] * np.log(self.beta) - self.beta * theta_i[:, np.newaxis].T)
+        logits = self.X_aux[i] @ self.gamma.T + theta_i @ self.upsilon.T
+        log_lik_logistic = self._log_likelihood_bernoulli(self.Y[i, :], logits)
+        return log_prior_gamma + log_lik_poisson + log_lik_logistic
+
+    
+    def _update_theta(self) -> None:
+        """Update theta using Laplace Approximation."""
+        for i in range(self.n):
+            # The function to minimize is the *negative* log posterior
+            def objective_func(theta_i):
+                # Ensure positivity during optimization
+                if np.any(theta_i <= 0):
+                    return np.inf
+                return -self._log_posterior_theta_i(i, theta_i)
+
+            # Use the current value as the starting point for the optimization
+            initial_guess = self.theta[i]
+
+            # Find the mode of the posterior by minimizing the negative log posterior
+            result = minimize(
+                fun=objective_func,
+                x0=initial_guess,
+                method='Nelder-Mead', # A gradient-free method, good for stability
             )
-        ))
+            if result.success:
+                self.theta[i] = result.x
 
-    def _log_posterior_upsilon(self, k: int, upsilon_k: np.ndarray) -> float:
-        logits = self.theta @ upsilon_k + self.X_aux @ self.gamma[k]
-        log_lik = self._log_likelihood(logits, self.Y[:, k])
-        prior_var = np.where(self.delta[k] == 1, self.tau1_sq, self.tau0_sq)
-        log_prior = -0.5 * np.sum(upsilon_k**2 / prior_var)
-        return log_lik + log_prior
-
-    def _update_delta(self) -> None:
-        delta_new = np.zeros_like(self.delta)
+    def _log_posterior_gamma_k(self, k: int, gamma_k: np.ndarray) -> float:
+        """Calculate log posterior for a single gamma_k vector."""
+        log_prior = norm_dist.logpdf(gamma_k, 0, np.sqrt(self.sigma_gamma_sq)).sum()
+        logits = self.X_aux @ gamma_k + self.theta @ self.upsilon[k]
+        log_lik = self._log_likelihood_bernoulli(self.Y[:, k], logits)
+        return log_prior + log_lik
+                
+    def _update_gamma(self) -> None:
+        """Update gamma using Laplace Approximation."""
         for k in range(self.k):
-            for l in range(self.d):
-                v = self.upsilon[k, l]
-                p1 = self.pi * np.exp(-0.5 * v * v / self.tau1_sq) / np.sqrt(2 * np.pi * self.tau1_sq)
-                p0 = (1 - self.pi) * np.exp(-0.5 * v * v / self.tau0_sq) / np.sqrt(2 * np.pi * self.tau0_sq)
-                prob = p1 / (p1 + p0 + 1e-12)
-                delta_new[k, l] = self.rng.binomial(1, prob)
-        self.delta = delta_new
+            def objective_func(gamma_k):
+                return -self._log_posterior_gamma_k(k, gamma_k)
+                
+            initial_guess = self.gamma[k]
+            result = minimize(fun=objective_func, x0=initial_guess, method='BFGS') # A gradient-based method
+            if result.success:
+                self.gamma[k] = result.x
 
-    def _update_upsilon(self, step_size: float = 0.1) -> None:
-        upsilon_new = np.copy(self.upsilon)
+    def _update_s_upsilon(self) -> None:
         for k in range(self.k):
-            current = self.upsilon[k]
-            proposal = current + self.rng.normal(0.0, step_size, size=current.shape)
-            log_p_curr = self._log_posterior_upsilon(k, current)
-            log_p_prop = self._log_posterior_upsilon(k, proposal)
-            accept_prob = np.exp(log_p_prop - log_p_curr)
-            if self.rng.random() < accept_prob:
-                upsilon_new[k] = proposal
-        self.upsilon = upsilon_new
+            logits_0 = self.X_aux @ self.gamma[k] # Logits when upsilon_k=0
+            logits_1 = logits_0 + self.theta @ self.w_upsilon[k] # Logits when upsilon_k=w_k
+            log_post_1 = np.log(self.pi_upsilon) + self._log_likelihood_bernoulli(self.Y[:, k], logits_1)
+            log_post_0 = np.log(1 - self.pi_upsilon) + self._log_likelihood_bernoulli(self.Y[:, k], logits_0)
+            
+            # Stable calculation of P(s=1) = sigmoid(log_post_1 - log_post_0)
+            prob_s1 = expit(log_post_1 - log_post_0)
+            self.s_upsilon[k] = self.rng.binomial(1, prob_s1, size=self.d)
 
-    # ------------------------------------------------------------------
-    def step(self) -> None:
-        """Run a single Gibbs iteration."""
-        self._update_theta()
-        self._update_beta()
-        self._update_xi()
-        self._update_eta()
-        self._update_gamma()
-        self._update_delta()
-        self._update_upsilon()
+    def _log_posterior_w_upsilon_k(self, k: int, w_upsilon_k: np.ndarray) -> float:
+        """Calculate log posterior for a single w_upsilon_k vector."""
+        log_prior = norm_dist.logpdf(w_upsilon_k, 0, np.sqrt(self.sigma_slab_sq)).sum()
+        upsilon_k = self.s_upsilon[k] * w_upsilon_k
+        logits = self.X_aux @ self.gamma[k] + self.theta @ upsilon_k
+        log_lik = self._log_likelihood_bernoulli(self.Y[:, k], logits)
+        return log_prior + log_lik
 
-    def run(self, n_iter: int) -> dict:
-        """Run ``n_iter`` iterations and return traces for ``upsilon`` and ``delta``."""
-        trace_upsilon = np.zeros((n_iter, *self.upsilon.shape))
-        trace_delta = np.zeros((n_iter, *self.delta.shape))
+    def _update_w_upsilon(self) -> None:
+        for k in range(self.k):
+            if np.any(self.s_upsilon[k] == 1):
+                def objective_func(w_upsilon_k):
+                    return -self._log_posterior_w_upsilon_k(k, w_upsilon_k)
 
-        for t in range(n_iter):
-            self.step()
-            trace_upsilon[t] = self.upsilon
-            trace_delta[t] = self.delta
+                initial_guess = self.w_upsilon[k]
+                result = minimize(fun=objective_func, x0=initial_guess, method='BFGS')
+                if result.success:
+                    self.w_upsilon[k] = result.x
+            else:
+                self.w_upsilon[k] = self.rng.normal(0.0, np.sqrt(self.sigma_slab_sq), size=self.d)
 
-        return {
-            "upsilon": trace_upsilon,
-            "delta": trace_delta,
-        }
+    
+    
