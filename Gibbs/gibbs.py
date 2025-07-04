@@ -11,6 +11,11 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import random
 
+# Configure JAX for better memory management
+import os
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.7'  # Limit JAX memory usage
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Don't preallocate all memory
+
 # joblib for easy parallelisation across independent updates
 from joblib import Parallel, delayed
 
@@ -297,6 +302,20 @@ class SpikeSlabGibbsSampler:
         ]
         results = Parallel(n_jobs=-1)(tasks)
         self.w_upsilon = np.asarray(results)
+
+    def clear_jax_cache(self) -> None:
+        """Clear JAX compilation cache to free memory."""
+        try:
+            # Clear JAX compilation cache
+            jax.clear_caches()
+        except:
+            pass
+
+    def cleanup_memory(self) -> None:
+        """Force garbage collection and JAX cache clearing."""
+        import gc
+        self.clear_jax_cache()
+        gc.collect()
 
     
     

@@ -230,3 +230,16 @@ vi_experiment_path_9213986.err
 vi_experiment_path_9213986.out
 VariationalInference/__pycache__/data.cpython-311.pyc
 VariationalInference/__pycache__/vi_model_complete.cpython-311.pyc
+Analysis/combined_analysis.ipynb
+filtered_pathways_cache.pkl
+gibbs_ajm_cyto_masked_9215551.err
+gibbs_ajm_cyto_masked_9215551.out
+gibbs_ajm_cyto_masked_job.sh
+gibbs_ajm_cyto_unmasked_9215550.err
+gibbs_ajm_cyto_unmasked_9215550.out
+gibbs_emtab_unmasked_job.sh
+Gibbs/minimal_test_results/drgp_matrix.csv.gz
+Gibbs/minimal_test_results/results.pkl
+Gibbs/minimal_test_results/test_predictions.csv.gz
+Gibbs/minimal_test_results/train_predictions.csv.gz
+Gibbs/minimal_test_results/val_predictions.csv.gz

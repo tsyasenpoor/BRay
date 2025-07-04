@@ -10,8 +10,6 @@ from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear
 # Log initial memory
 print(f"Initial memory usage: {get_memory_usage():.2f} MB")
 
-from run_experiments import run_sampler_and_evaluate
-
 log_memory("Before loading data files")
 
 cytoseeds_csv_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_FileTransfer/Seed genes/CYTOBEAM_Cytokines_KEGGPATHWAY_addedMif.csv"
@@ -151,11 +149,13 @@ pathways = read_gmt(pathways_path)  # 1730 pathways
 print(f"Number of pathways: {len(pathways)}")
 log_memory("After reading pathways")
 
+# Load and filter pathways once, save for reuse
 pathways = convert_pathways_to_ensembl(pathways)  
 log_memory("After converting pathways to ensembl")
 
-# nap_file_path_raw = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_AJM2/2_Data/2_SingleCellData/1_GSE139565_NaiveAndPlasma/GEX_NAP_filt_raw_modelingonly_2024-02-05.csv"
-# nap_metadata_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_AJM2/2_Data/2_SingleCellData/1_GSE139565_NaiveAndPlasma/meta_NAP_unfilt_fullData_2024-02-05.csv"
+# Save filtered pathways to a separate cache file for easy access
+filtered_pathways_cache = "/labs/Aguiar/SSPA_BRAY/BRay/filtered_pathways_cache.pkl"
+save_cache(pathways, filtered_pathways_cache)
 
 # Updated to use RDS file instead of CSV
 ajm_file_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_AJM2/2_Data/2_SingleCellData/2_AJM_Parse_Timecourse/GEX_TC_LPSonly_Bcellonly_filt_raw_2024-02-05.rds"
@@ -341,8 +341,29 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     ajm_cyto_samples = ajm_adata[ajm_adata.obs['cyto'].isin([0,1])].copy()
 
     # Normalize and log-transform
+    print("Applying normalization and log transformation to AJM datasets...")
+    
+    # Store raw data
+    ajm_ap_samples.raw = ajm_ap_samples.copy()
+    ajm_cyto_samples.raw = ajm_cyto_samples.copy()
+    
+    # Size factor normalization
     QCscRNAsizeFactorNormOnly(ajm_ap_samples)
     QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
+    
+    # Log transform
+    import scipy.sparse as sp
+    if sp.issparse(ajm_ap_samples.X):
+        ajm_ap_samples.X.data = np.log1p(ajm_ap_samples.X.data)
+    else:
+        ajm_ap_samples.X = np.log1p(ajm_ap_samples.X)
+        
+    if sp.issparse(ajm_cyto_samples.X):
+        ajm_cyto_samples.X.data = np.log1p(ajm_cyto_samples.X.data)
+    else:
+        ajm_cyto_samples.X = np.log1p(ajm_cyto_samples.X)
+    
+    print("AJM datasets normalized and log-transformed")
 
     # Add dataset identifier to help with cache loading
     ajm_ap_samples.obs['dataset'] = 'ap'
@@ -514,6 +535,34 @@ def prepare_and_load_emtab():
     print(f"  - First few obs values:")
     print(adata.obs.head())
 
+    # Apply normalization and log transformation for EMTAB
+    print("Applying normalization and log transformation to EMTAB dataset...")
+    
+    # Store raw data
+    adata.raw = adata.copy()
+    
+    # Size factor normalization (using existing function)
+    QCscRNAsizeFactorNormOnly(adata)
+    
+    # Log transform
+    import scipy.sparse as sp
+    if sp.issparse(adata.X):
+        adata.X.data = np.log1p(adata.X.data)
+    else:
+        adata.X = np.log1p(adata.X)
+    
+    print("EMTAB dataset normalized and log-transformed")
+    
+    # Log data statistics after normalization
+    if sp.issparse(adata.X):
+        data_min = adata.X.data.min()
+        data_max = adata.X.data.max()
+    else:
+        data_min = adata.X.min()
+        data_max = adata.X.max()
+    
+    print(f"  - Data range after normalization: {data_min:.3f} - {data_max:.3f}")
+
     # Save the converted AnnData to cache for future use
     with open(cache_file, "wb") as f:
         pickle.dump(adata, f)
@@ -617,3 +666,399 @@ def sample_adata(adata, n_cells=None, cell_fraction=None,
     gene_indices = rng.choice(adata.n_vars, size=n_genes, replace=False)
 
     return adata[cell_indices, :][:, gene_indices].copy()
+
+
+def create_test_sample(adata, n_samples=200, n_genes=1000, 
+                      prioritize_pathway_genes=True, pathways_dict=None,
+                      min_expression_threshold=0.1, normalize_and_log=True, 
+                      random_state=42):
+    """
+    Create a small test sample from a dataset for quick validation.
+    
+    Parameters:
+    -----------
+    adata : AnnData
+        Input dataset
+    n_samples : int, default=200
+        Number of samples to include in test dataset
+    n_genes : int, default=1000
+        Number of genes to include in test dataset
+    prioritize_pathway_genes : bool, default=True
+        Whether to prioritize genes that are in pathways
+    pathways_dict : dict, optional
+        Dictionary of pathways to prioritize genes from
+    min_expression_threshold : float, default=0.1
+        Minimum mean expression for gene inclusion
+    normalize_and_log : bool, default=True
+        Whether to apply normalization and log transformation
+    random_state : int, default=42
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    adata_test : AnnData
+        Small test dataset with proper normalization
+    """
+    
+    import numpy as np
+    import anndata as ad
+    from scipy import sparse
+    
+    rng = np.random.default_rng(random_state)
+    
+    print(f"Creating test sample from dataset with shape {adata.shape}")
+    
+    # Sample cells/samples
+    if n_samples >= adata.n_obs:
+        sample_indices = np.arange(adata.n_obs)
+        print(f"Using all {adata.n_obs} samples (requested {n_samples})")
+    else:
+        # Stratified sampling to maintain label distribution
+        if 'Crohn\'s disease' in adata.obs.columns:
+            # For EMTAB dataset, try to maintain class balance
+            cd_positive = adata.obs["Crohn's disease"] == 1
+            uc_positive = adata.obs["ulcerative colitis"] == 1
+            
+            n_cd_pos = min(n_samples // 4, np.sum(cd_positive))
+            n_uc_pos = min(n_samples // 4, np.sum(uc_positive))
+            n_remaining = n_samples - n_cd_pos - n_uc_pos
+            
+            cd_pos_indices = rng.choice(np.where(cd_positive)[0], size=n_cd_pos, replace=False)
+            uc_pos_indices = rng.choice(np.where(uc_positive)[0], size=n_uc_pos, replace=False)
+            
+            # Get remaining samples from non-positive cases
+            remaining_mask = ~(cd_positive | uc_positive)
+            if np.sum(remaining_mask) > 0:
+                remaining_indices = rng.choice(np.where(remaining_mask)[0], 
+                                             size=min(n_remaining, np.sum(remaining_mask)), 
+                                             replace=False)
+            else:
+                remaining_indices = np.array([])
+            
+            sample_indices = np.concatenate([cd_pos_indices, uc_pos_indices, remaining_indices])
+            
+            print(f"Sampled {len(sample_indices)} samples:")
+            print(f"  - Crohn's positive: {n_cd_pos}")
+            print(f"  - UC positive: {n_uc_pos}")
+            print(f"  - Others: {len(remaining_indices)}")
+        else:
+            # For other datasets, random sampling
+            sample_indices = rng.choice(adata.n_obs, size=n_samples, replace=False)
+            print(f"Random sampling of {n_samples} samples")
+    
+    # Gene selection strategy
+    gene_indices = select_test_genes(
+        adata, 
+        n_genes=n_genes,
+        prioritize_pathway_genes=prioritize_pathway_genes,
+        pathways_dict=pathways_dict,
+        min_expression_threshold=min_expression_threshold,
+        random_state=random_state
+    )
+    
+    print(f"Selected {len(gene_indices)} genes")
+    
+    # Create subset
+    adata_test = adata[sample_indices, :][:, gene_indices].copy()
+    
+    print(f"Test dataset created with shape: {adata_test.shape}")
+    
+    # Apply normalization and log transformation if requested
+    if normalize_and_log:
+        print("Applying normalization and log transformation...")
+        
+        # Store raw data
+        adata_test.raw = adata_test.copy()
+        
+        # Apply size factor normalization
+        QCscRNAsizeFactorNormOnly(adata_test)
+        
+        # Log transform (log1p = log(x + 1))
+        if sparse.issparse(adata_test.X):
+            adata_test.X.data = np.log1p(adata_test.X.data)
+        else:
+            adata_test.X = np.log1p(adata_test.X)
+        
+        # Calculate new statistics after normalization
+        if sparse.issparse(adata_test.X):
+            gene_means_norm = np.array(adata_test.X.mean(axis=0)).flatten()
+            gene_vars_norm = np.array(adata_test.X.power(2).mean(axis=0)).flatten() - gene_means_norm**2
+        else:
+            gene_means_norm = np.mean(adata_test.X, axis=0)
+            gene_vars_norm = np.var(adata_test.X, axis=0)
+        
+        print(f"After normalization and log transform:")
+        print(f"  - Mean expression range: {gene_means_norm.min():.3f} - {gene_means_norm.max():.3f}")
+        print(f"  - Variance range: {gene_vars_norm.min():.3f} - {gene_vars_norm.max():.3f}")
+        print(f"  - Data range: {adata_test.X.min():.3f} - {adata_test.X.max():.3f}")
+    
+    # Log class distribution for verification
+    if 'Crohn\'s disease' in adata_test.obs.columns:
+        cd_count = np.sum(adata_test.obs["Crohn's disease"])
+        uc_count = np.sum(adata_test.obs["ulcerative colitis"])
+        print(f"Class distribution in test set:")
+        print(f"  - Crohn's disease: {cd_count}/{adata_test.n_obs} ({cd_count/adata_test.n_obs:.2%})")
+        print(f"  - Ulcerative colitis: {uc_count}/{adata_test.n_obs} ({uc_count/adata_test.n_obs:.2%})")
+    
+    return adata_test
+
+
+def select_test_genes(adata, n_genes=1000, prioritize_pathway_genes=True,
+                     pathways_dict=None, min_expression_threshold=0.1,
+                     random_state=42):
+    """
+    Select genes for test dataset with smart prioritization.
+    
+    Parameters:
+    -----------
+    adata : AnnData
+        Input dataset
+    n_genes : int
+        Number of genes to select
+    prioritize_pathway_genes : bool
+        Whether to prioritize pathway genes
+    pathways_dict : dict
+        Dictionary of pathways
+    min_expression_threshold : float
+        Minimum mean expression threshold
+    random_state : int
+        Random seed
+        
+    Returns:
+    --------
+    gene_indices : np.ndarray
+        Indices of selected genes
+    """
+    
+    import numpy as np
+    import scipy.sparse as sp
+    
+    rng = np.random.default_rng(random_state)
+    
+    # Calculate gene statistics
+    if sp.issparse(adata.X):
+        gene_means = np.array(adata.X.mean(axis=0)).flatten()
+        gene_vars = np.array(adata.X.power(2).mean(axis=0)).flatten() - gene_means**2
+    else:
+        gene_means = np.mean(adata.X, axis=0)
+        gene_vars = np.var(adata.X, axis=0)
+    
+    # Filter by minimum expression
+    expressed_mask = gene_means >= min_expression_threshold
+    print(f"Genes passing expression threshold: {np.sum(expressed_mask)}/{len(gene_means)}")
+    
+    if n_genes >= np.sum(expressed_mask):
+        print("Using all expressed genes")
+        return np.where(expressed_mask)[0]
+    
+    # Gene selection strategy
+    selected_indices = set()
+    
+    if prioritize_pathway_genes and pathways_dict is not None:
+        # Get pathway genes
+        pathway_genes = set()
+        for pathway_gene_list in pathways_dict.values():
+            pathway_genes.update(pathway_gene_list)
+        
+        # Find pathway genes in dataset
+        pathway_gene_indices = []
+        for i, gene_name in enumerate(adata.var_names):
+            if gene_name in pathway_genes and expressed_mask[i]:
+                pathway_gene_indices.append(i)
+        
+        # Sample pathway genes (up to 70% of target)
+        n_pathway_genes = min(len(pathway_gene_indices), int(n_genes * 0.7))
+        if n_pathway_genes > 0:
+            selected_pathway = rng.choice(pathway_gene_indices, size=n_pathway_genes, replace=False)
+            selected_indices.update(selected_pathway)
+            print(f"Selected {n_pathway_genes} pathway genes")
+    
+    # Fill remaining slots with high-variance genes
+    remaining_slots = n_genes - len(selected_indices)
+    if remaining_slots > 0:
+        # Get available gene indices (expressed and not already selected)
+        available_indices = np.where(expressed_mask)[0]
+        available_indices = available_indices[~np.isin(available_indices, list(selected_indices))]
+        
+        if len(available_indices) > 0:
+            # Select high-variance genes
+            available_vars = gene_vars[available_indices]
+            
+            # Sort by variance (descending) and take top genes
+            if remaining_slots >= len(available_indices):
+                high_var_indices = available_indices
+            else:
+                var_sort_indices = np.argsort(available_vars)[::-1]
+                high_var_indices = available_indices[var_sort_indices[:remaining_slots]]
+            
+            selected_indices.update(high_var_indices)
+            print(f"Selected {len(high_var_indices)} high-variance genes")
+    
+    selected_indices = np.array(list(selected_indices))
+    
+    print(f"Total genes selected: {len(selected_indices)}")
+    print(f"  - Mean expression range: {gene_means[selected_indices].min():.3f} - {gene_means[selected_indices].max():.3f}")
+    print(f"  - Variance range: {gene_vars[selected_indices].min():.3f} - {gene_vars[selected_indices].max():.3f}")
+    
+    return selected_indices
+
+
+def prepare_test_emtab_dataset(n_samples=200, n_genes=1000, random_state=42):
+    """
+    Create a small test version of the EMTAB dataset.
+    
+    Parameters:
+    -----------
+    n_samples : int, default=200
+        Number of samples in test dataset
+    n_genes : int, default=1000  
+        Number of genes in test dataset
+    random_state : int, default=42
+        Random seed for reproducibility
+        
+    Returns:
+    --------
+    adata_test : AnnData
+        Small test dataset ready for model training
+    """
+    
+    print("Loading full EMTAB dataset...")
+    emtab_full = prepare_and_load_emtab()
+    
+    print("Filtering to protein-coding genes...")
+    emtab_filtered = filter_protein_coding_genes(emtab_full, gene_annotation)
+    
+    print("Creating test sample...")
+    emtab_test = create_test_sample(
+        emtab_filtered,
+        n_samples=n_samples,
+        n_genes=n_genes,
+        prioritize_pathway_genes=True,
+        pathways_dict=pathways,
+        random_state=random_state
+    )
+    
+    print("\nTest dataset summary:")
+    print(f"Shape: {emtab_test.shape}")
+    print(f"Labels: {list(emtab_test.obs.columns)}")
+    print(f"Aux features: age, sex_female")
+    
+    return emtab_test
+
+
+def quick_test_experiment(dataset_name='emtab_test', n_samples=200, n_genes=1000, 
+                         configuration='unmasked', d=10, max_iters=200, 
+                         burn_in=100, random_state=42):
+    """
+    Run a quick test experiment for validation.
+    
+    Parameters:
+    -----------
+    dataset_name : str, default='emtab_test'
+        Which test dataset to use
+    n_samples : int, default=200
+        Number of samples for test
+    n_genes : int, default=1000
+        Number of genes for test
+    configuration : str, default='unmasked'
+        Model configuration to test
+    d : int, default=10
+        Number of gene programs (for unmasked)
+    max_iters : int, default=200
+        Maximum iterations for quick test
+    burn_in : int, default=100
+        Burn-in iterations
+    random_state : int, default=42
+        Random seed
+        
+    Returns:
+    --------
+    results : dict
+        Experiment results
+    """
+    
+    print("="*60)
+    print("QUICK TEST EXPERIMENT")
+    print("="*60)
+    
+    # Import here to avoid circular imports
+    from run_experiments import run_sampler_and_evaluate
+    import scipy.sparse as sp
+    
+    # Prepare test data
+    if dataset_name == 'emtab_test':
+        adata_test = prepare_test_emtab_dataset(n_samples, n_genes, random_state)
+        
+        X = adata_test.X.toarray() if sp.issparse(adata_test.X) else adata_test.X
+        Y = adata_test.obs[["Crohn's disease", "ulcerative colitis"]].values
+        X_aux = adata_test.obs[["age", "sex_female"]].values
+        gene_names = adata_test.var_names.tolist()
+        cyto_seed_genes = None
+        
+    elif dataset_name == 'ajm_cyto_test':
+        print("Loading AJM cyto dataset...")
+        _, ajm_cyto_samples = prepare_ajm_dataset()
+        ajm_cyto_filtered = filter_protein_coding_genes(ajm_cyto_samples, gene_annotation)
+        
+        adata_test = create_test_sample(
+            ajm_cyto_filtered,
+            n_samples=n_samples,
+            n_genes=n_genes,
+            prioritize_pathway_genes=True,
+            pathways_dict=pathways,
+            random_state=random_state
+        )
+        
+        X = adata_test.X.toarray() if sp.issparse(adata_test.X) else adata_test.X
+        Y = adata_test.obs['cyto'].values.reshape(-1, 1)
+        X_aux = np.zeros((X.shape[0], 1))
+        gene_names = adata_test.var_names.tolist()
+        cyto_seed_genes = CYTOSEED_ensembl
+        
+    else:
+        raise ValueError(f"Unknown test dataset: {dataset_name}")
+    
+    print(f"\nRunning test with:")
+    print(f"  - Dataset: {dataset_name}")
+    print(f"  - Data shape: X={X.shape}, Y={Y.shape}, X_aux={X_aux.shape}")
+    print(f"  - Configuration: {configuration}")
+    print(f"  - Max iterations: {max_iters}")
+    
+    # Run experiment
+    results = run_sampler_and_evaluate(
+        X=X,
+        Y=Y,
+        X_aux=X_aux,
+        n_programs=d,
+        configuration=configuration,
+        pathways_dict=pathways,
+        gene_names=gene_names,
+        cyto_seed_genes=cyto_seed_genes,
+        max_iters=max_iters,
+        burn_in=burn_in,
+        output_dir='test_results',
+        experiment_name=f'test_{dataset_name}_{configuration}',
+        random_state=random_state,
+        n_chains=2,  # Fewer chains for quick testing
+        check_convergence=True,
+        convergence_check_interval=50,  # Check more frequently
+        convergence_patience=2  # Less patience for quick results
+    )
+    
+    print("\n" + "="*60)
+    print("QUICK TEST COMPLETED")
+    print("="*60)
+    print(f"Iterations: {results['actual_iterations']}/{max_iters}")
+    if results['early_stopped']:
+        print("✓ Early stopping achieved")
+    
+    print("\nTest Performance:")
+    for split in ['test']:
+        if f'{split}_metrics' in results:
+            metrics = results[f'{split}_metrics']
+            for label_key, label_metrics in metrics.items():
+                print(f"  {split} {label_key}:")
+                for metric_name, value in label_metrics.items():
+                    print(f"    {metric_name}: {value:.4f}")
+    
+    return results
