@@ -14,6 +14,30 @@ from jax import random
 # joblib for easy parallelisation across independent updates
 from joblib import Parallel, delayed
 
+
+def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
+                           upsilon_k: np.ndarray, X_aux: np.ndarray,
+                           Y_k: np.ndarray, sigma_gamma_sq: float) -> np.ndarray:
+    """Standalone worker for parallel gamma updates."""
+
+    def log_likelihood_bernoulli(y: np.ndarray, logits: np.ndarray) -> float:
+        log_p1 = log_expit(logits)
+        log_p0 = log_expit(-logits)
+        return np.sum(y * log_p1 + (1 - y) * log_p0)
+
+    def log_posterior_gamma_k(gamma_k_vec: np.ndarray) -> float:
+        log_prior = norm_dist.logpdf(gamma_k_vec, 0,
+                                     np.sqrt(sigma_gamma_sq)).sum()
+        logits = X_aux @ gamma_k_vec + theta @ upsilon_k
+        log_lik = log_likelihood_bernoulli(Y_k, logits)
+        return log_prior + log_lik
+
+    def objective_func(gamma_k_vec: np.ndarray) -> float:
+        return -log_posterior_gamma_k(gamma_k_vec)
+
+    result = minimize(fun=objective_func, x0=gamma_k, method="BFGS")
+    return result.x if result.success else gamma_k
+
 class SpikeSlabGibbsSampler:
 
     def __init__(
@@ -159,14 +183,19 @@ class SpikeSlabGibbsSampler:
     def _update_gamma(self) -> None:
         """Update gamma using Laplace Approximation in parallel."""
 
-        def optimise_single(k: int) -> np.ndarray:
-            def objective_func(gamma_k):
-                return -self._log_posterior_gamma_k(k, gamma_k)
-
-            result = minimize(fun=objective_func, x0=self.gamma[k], method="BFGS")
-            return result.x if result.success else self.gamma[k]
-
-        results = Parallel(n_jobs=-1)(delayed(optimise_single)(k) for k in range(self.k))
+        tasks = [
+            delayed(_optimise_gamma_worker)(
+                k,
+                self.gamma[k],
+                self.theta,
+                self.upsilon[k],
+                self.X_aux,
+                self.Y[:, k],
+                self.sigma_gamma_sq,
+            )
+            for k in range(self.k)
+        ]
+        results = Parallel(n_jobs=-1)(tasks)
         self.gamma = np.asarray(results)
 
     def _update_s_upsilon(self) -> None:
