@@ -5,6 +5,15 @@ from scipy.optimize import minimize
 from scipy.stats import norm as norm_dist
 from scipy.stats import gamma as gamma_dist
 
+# JAX for vectorised and JIT compiled operations
+import jax
+import jax.numpy as jnp
+import jax.scipy as jsp
+from jax import random
+
+# joblib for easy parallelisation across independent updates
+from joblib import Parallel, delayed
+
 class SpikeSlabGibbsSampler:
 
     def __init__(
@@ -26,6 +35,7 @@ class SpikeSlabGibbsSampler:
         seed: int | None = None,
     ) -> None:
         self.rng: Generator = default_rng(seed)
+        self.jax_key = random.PRNGKey(seed if seed is not None else 0)
         self.X = np.asarray(X, dtype=np.int32)
         self.Y = np.asarray(Y, dtype=np.int32)
         self.X_aux = np.asarray(X_aux)
@@ -63,21 +73,23 @@ class SpikeSlabGibbsSampler:
         self._update_latent_counts_z()
 
     def _update_latent_counts_z(self) -> None:
-        """Sample latent counts z_ijl in log-space for numerical stability."""
-        with np.errstate(divide='ignore'): # Ignore log(0) warnings
-            log_theta = np.log(self.theta)
-            log_beta = np.log(self.beta)
+        """Sample latent counts ``z`` using JAX for vectorisation."""
+        with np.errstate(divide="ignore"):
+            log_theta = jnp.log(jnp.asarray(self.theta))
+            log_beta = jnp.log(jnp.asarray(self.beta))
 
-        log_rates = log_theta[:, np.newaxis, :] + log_beta[np.newaxis, :, :]
-        log_total_rates = logsumexp(log_rates, axis=2)
-        log_probs = log_rates - log_total_rates[..., np.newaxis]
-        probs = np.exp(log_probs)
-        for i in range(self.n):
-            for j in range(self.p):
-                if self.X[i, j] > 0:
-                    self.z[i, j, :] = self.rng.multinomial(n=self.X[i, j], pvals=probs[i, j, :])
-                else:
-                    self.z[i, j, :] = 0
+        log_rates = log_theta[:, None, :] + log_beta[None, :, :]
+        log_probs = log_rates - jsp.special.logsumexp(log_rates, axis=2, keepdims=True)
+        probs = jnp.exp(log_probs)
+
+        flat_probs = probs.reshape(-1, self.d)
+        flat_counts = jnp.asarray(self.X.reshape(-1), dtype=jnp.int32)
+
+        keys = random.split(self.jax_key, flat_probs.shape[0] + 1)
+        self.jax_key = keys[0]
+        sample_fun = lambda k, n, p: random.multinomial(k, n=n, p=p)
+        samples = jax.vmap(sample_fun)(keys[1:], flat_counts, flat_probs)
+        self.z = np.array(samples.reshape(self.n, self.p, self.d), dtype=np.int32)
 
     # Closed form updates for beta, xi, eta
     def _update_beta(self) -> None:
@@ -119,26 +131,23 @@ class SpikeSlabGibbsSampler:
 
     
     def _update_theta(self) -> None:
-        """Update theta using Laplace Approximation."""
-        for i in range(self.n):
-            # The function to minimize is the *negative* log posterior
+        """Update theta using Laplace Approximation in parallel."""
+
+        def optimise_single(i: int) -> np.ndarray:
             def objective_func(theta_i):
-                # Ensure positivity during optimization
                 if np.any(theta_i <= 0):
                     return np.inf
                 return -self._log_posterior_theta_i(i, theta_i)
 
-            # Use the current value as the starting point for the optimization
-            initial_guess = self.theta[i]
-
-            # Find the mode of the posterior by minimizing the negative log posterior
             result = minimize(
                 fun=objective_func,
-                x0=initial_guess,
-                method='Nelder-Mead', # A gradient-free method, good for stability
+                x0=self.theta[i],
+                method="Nelder-Mead",
             )
-            if result.success:
-                self.theta[i] = result.x
+            return result.x if result.success else self.theta[i]
+
+        results = Parallel(n_jobs=-1)(delayed(optimise_single)(i) for i in range(self.n))
+        self.theta = np.asarray(results)
 
     def _log_posterior_gamma_k(self, k: int, gamma_k: np.ndarray) -> float:
         """Calculate log posterior for a single gamma_k vector."""
@@ -148,15 +157,17 @@ class SpikeSlabGibbsSampler:
         return log_prior + log_lik
                 
     def _update_gamma(self) -> None:
-        """Update gamma using Laplace Approximation."""
-        for k in range(self.k):
+        """Update gamma using Laplace Approximation in parallel."""
+
+        def optimise_single(k: int) -> np.ndarray:
             def objective_func(gamma_k):
                 return -self._log_posterior_gamma_k(k, gamma_k)
-                
-            initial_guess = self.gamma[k]
-            result = minimize(fun=objective_func, x0=initial_guess, method='BFGS') # A gradient-based method
-            if result.success:
-                self.gamma[k] = result.x
+
+            result = minimize(fun=objective_func, x0=self.gamma[k], method="BFGS")
+            return result.x if result.success else self.gamma[k]
+
+        results = Parallel(n_jobs=-1)(delayed(optimise_single)(k) for k in range(self.k))
+        self.gamma = np.asarray(results)
 
     def _update_s_upsilon(self) -> None:
         for k in range(self.k):
@@ -178,17 +189,18 @@ class SpikeSlabGibbsSampler:
         return log_prior + log_lik
 
     def _update_w_upsilon(self) -> None:
-        for k in range(self.k):
+        def optimise_single(k: int) -> np.ndarray:
             if np.any(self.s_upsilon[k] == 1):
                 def objective_func(w_upsilon_k):
                     return -self._log_posterior_w_upsilon_k(k, w_upsilon_k)
 
-                initial_guess = self.w_upsilon[k]
-                result = minimize(fun=objective_func, x0=initial_guess, method='BFGS')
-                if result.success:
-                    self.w_upsilon[k] = result.x
+                result = minimize(fun=objective_func, x0=self.w_upsilon[k], method="BFGS")
+                return result.x if result.success else self.w_upsilon[k]
             else:
-                self.w_upsilon[k] = self.rng.normal(0.0, np.sqrt(self.sigma_slab_sq), size=self.d)
+                return self.rng.normal(0.0, np.sqrt(self.sigma_slab_sq), size=self.d)
+
+        results = Parallel(n_jobs=-1)(delayed(optimise_single)(k) for k in range(self.k))
+        self.w_upsilon = np.asarray(results)
 
     
     
