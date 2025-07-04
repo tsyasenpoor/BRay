@@ -20,6 +20,9 @@ def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
                            Y_k: np.ndarray, sigma_gamma_sq: float) -> np.ndarray:
     """Standalone worker for parallel gamma updates."""
 
+    # Center theta for the logistic regression component
+    theta_centered = theta - np.mean(theta, axis=0)
+
     def log_likelihood_bernoulli(y: np.ndarray, logits: np.ndarray) -> float:
         log_p1 = log_expit(logits)
         log_p0 = log_expit(-logits)
@@ -28,7 +31,7 @@ def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
     def log_posterior_gamma_k(gamma_k_vec: np.ndarray) -> float:
         log_prior = norm_dist.logpdf(gamma_k_vec, 0,
                                      np.sqrt(sigma_gamma_sq)).sum()
-        logits = X_aux @ gamma_k_vec + theta @ upsilon_k
+        logits = X_aux @ gamma_k_vec + theta_centered @ upsilon_k
         log_lik = log_likelihood_bernoulli(Y_k, logits)
         return log_prior + log_lik
 
@@ -199,9 +202,10 @@ class SpikeSlabGibbsSampler:
         self.gamma = np.asarray(results)
 
     def _update_s_upsilon(self) -> None:
+        theta_centered = self.theta - np.mean(self.theta, axis=0)
         for k in range(self.k):
-            logits_0 = self.X_aux @ self.gamma[k] # Logits when upsilon_k=0
-            logits_1 = logits_0 + self.theta @ self.w_upsilon[k] # Logits when upsilon_k=w_k
+            logits_0 = self.X_aux @ self.gamma[k]  # Logits when upsilon_k=0
+            logits_1 = logits_0 + theta_centered @ self.w_upsilon[k]  # Logits when upsilon_k=w_k
             log_post_1 = np.log(self.pi_upsilon) + self._log_likelihood_bernoulli(self.Y[:, k], logits_1)
             log_post_0 = np.log(1 - self.pi_upsilon) + self._log_likelihood_bernoulli(self.Y[:, k], logits_0)
             
@@ -211,9 +215,10 @@ class SpikeSlabGibbsSampler:
 
     def _log_posterior_w_upsilon_k(self, k: int, w_upsilon_k: np.ndarray) -> float:
         """Calculate log posterior for a single w_upsilon_k vector."""
+        theta_centered = self.theta - np.mean(self.theta, axis=0)
         log_prior = norm_dist.logpdf(w_upsilon_k, 0, np.sqrt(self.sigma_slab_sq)).sum()
         upsilon_k = self.s_upsilon[k] * w_upsilon_k
-        logits = self.X_aux @ self.gamma[k] + self.theta @ upsilon_k
+        logits = self.X_aux @ self.gamma[k] + theta_centered @ upsilon_k
         log_lik = self._log_likelihood_bernoulli(self.Y[:, k], logits)
         return log_prior + log_lik
 
