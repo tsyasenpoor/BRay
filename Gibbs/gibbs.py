@@ -35,7 +35,7 @@ def _optimise_gamma_worker(k: int, gamma_k: np.ndarray, theta: np.ndarray,
     def objective_func(gamma_k_vec: np.ndarray) -> float:
         return -log_posterior_gamma_k(gamma_k_vec)
 
-    result = minimize(fun=objective_func, x0=gamma_k, method="BFGS")
+    result = minimize(fun=objective_func, x0=gamma_k, method="Nelder-Mead")
     return result.x if result.success else gamma_k
 
 class SpikeSlabGibbsSampler:
