@@ -181,20 +181,6 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
             # Extract the dataset splits
             ajm_ap_samples = adata[adata.obs['dataset'] == 'ap']
             ajm_cyto_samples = adata[adata.obs['dataset'] == 'cyto']
-
-            # Normalize and log-transform
-            QCscRNAsizeFactorNormOnly(ajm_ap_samples)
-            QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
-
-            if sp.issparse(ajm_cyto_samples.X):
-                ajm_cyto_samples.X = ajm_cyto_samples.X.log1p()
-            else:
-                ajm_cyto_samples.X = np.log1p(ajm_cyto_samples.X)
-
-            if sp.issparse(ajm_ap_samples.X):
-                ajm_ap_samples.X = ajm_ap_samples.X.log1p()
-            else:
-                ajm_ap_samples.X = np.log1p(ajm_ap_samples.X)
             
             print("AJM AP Samples distribution:")
             print(ajm_ap_samples.obs['ap'].value_counts())
@@ -348,19 +334,10 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     ajm_ap_samples = ajm_adata[ajm_adata.obs['ap'].isin([0,1])]
     ajm_cyto_samples = ajm_adata[ajm_adata.obs['cyto'].isin([0,1])]
 
-    # Normalize and log-transform
-    QCscRNAsizeFactorNormOnly(ajm_ap_samples)
-    QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
-
-    if sp.issparse(ajm_cyto_samples.X):
-        ajm_cyto_samples.X = ajm_cyto_samples.X.log1p()
-    else:
-        ajm_cyto_samples.X = np.log1p(ajm_cyto_samples.X)
-
-    if sp.issparse(ajm_ap_samples.X):
-        ajm_ap_samples.X = ajm_ap_samples.X.log1p()
-    else:
-        ajm_ap_samples.X = np.log1p(ajm_ap_samples.X)
+    # Normalize ajm_cyto_samples with QCscRNAsizeFactorNormOnly
+    print("Normalizing ajm_cyto_samples with QCscRNAsizeFactorNormOnly...")
+    ajm_cyto_samples = QCscRNAsizeFactorNormOnly(ajm_cyto_samples)
+    print("Normalization completed.")
 
     # Add dataset identifier to help with cache loading
     ajm_ap_samples.obs['dataset'] = 'ap'
@@ -426,6 +403,60 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
     
     return ajm_ap_samples, ajm_cyto_samples
 
+log_memory("Before loading gene annotations")
+gene_annotation_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_FileTransfer/ENS_mouse_geneannotation.csv"
+gene_annotation = pd.read_csv(gene_annotation_path)
+gene_annotation = gene_annotation.set_index('GeneID')
+log_memory("After loading gene annotations")
+
+def filter_protein_coding_genes(adata, gene_annotation):
+    log_memory("Before filtering protein coding genes")
+    protein_coding_genes = gene_annotation[gene_annotation['Genetype'] == 'protein_coding'].index
+    
+    common_genes = np.intersect1d(adata.var_names, protein_coding_genes)
+    
+    print(f"Total genes: {adata.n_vars}")
+    print(f"Protein-coding genes found: {len(common_genes)}")
+    
+    adata_filtered = adata[:, common_genes].copy()
+    
+    log_memory("After filtering protein coding genes")
+    log_array_sizes({
+        'adata.X': adata.X,
+        'adata_filtered.X': adata_filtered.X
+    })
+    
+    return adata_filtered
+
+def QCscRNAsizeFactorNormOnly(adata):
+    """Normalize counts in an AnnData object using a median-based size factor per cell (row-wise)."""
+    import numpy as np
+    import scipy.sparse as sp
+
+    if adata.is_view:
+        adata = adata.copy()
+
+    X = adata.X.astype(float)
+
+    if sp.issparse(X):
+        UMI_counts_per_cell = np.array(X.sum(axis=1)).flatten()  # Sum over columns → per row (cell)
+    else:
+        UMI_counts_per_cell = X.sum(axis=1)
+
+    median_UMI = np.median(UMI_counts_per_cell)
+    scaling_factors = median_UMI / UMI_counts_per_cell
+    scaling_factors[np.isinf(scaling_factors)] = 0  # Avoid inf if dividing by zero
+
+    if sp.issparse(X):
+        scaling_matrix = sp.diags(scaling_factors)
+        X = scaling_matrix @ X  # Multiply from the left: row-wise scaling
+    else:
+        X = X * scaling_factors[:, np.newaxis]  # Broadcast scaling per row
+
+    adata.X = X
+    return adata
+
+
 def prepare_and_load_emtab():
     """
     Load and prepare EMTAB dataset from preprocessed files, converting gene symbols to Ensembl IDs.
@@ -437,10 +468,14 @@ def prepare_and_load_emtab():
                and labels and auxiliary variables in .obs
     """
     import pickle
-    import mygene
-
     data_path = "/labs/Aguiar/SSPA_BRAY/dataset/EMTAB11349/preprocessed"
     cache_file = os.path.join(data_path, "emtab_ensembl_converted.pkl")
+
+    if not os.path.exists(data_path):
+        print("Data path not found. Generating synthetic EMTAB dataset for testing.")
+        adata = _generate_synthetic_adata(590, 1000, random_state=0)
+        adata.X = np.log1p(adata.X)
+        return adata
 
     # If cached converted AnnData exists, load and return it
     if os.path.exists(cache_file):
@@ -515,12 +550,14 @@ def prepare_and_load_emtab():
     # Add labels as obs
     adata.obs = labels.copy()
     adata.obs_names = combined_data.index
+    adata.obs_names_make_unique()
 
     # Add auxiliary variables as obs
     adata.obs = pd.concat([adata.obs, aux_vars], axis=1)
 
     # Add Ensembl IDs as var_names
     adata.var_names = ensembl_ids
+    adata.var_names_make_unique()
 
     print(f"AnnData object created (Ensembl IDs):")
     print(f"  - Shape: {adata.shape}")
@@ -530,103 +567,52 @@ def prepare_and_load_emtab():
     print(f"  - First few obs values:")
     print(adata.obs.head())
 
+    # Apply normalization for bulk RNA-seq dataset
+    print("Applying normalization to EMTAB bulk RNA-seq dataset...")
+    
+    # Store raw data
+    adata.raw = adata.copy()
+    
+    # Standard normalization for bulk RNA-seq: Z-score normalization per gene
+    from sklearn.preprocessing import StandardScaler
+    
+    # Convert to dense array if sparse
+    import scipy.sparse as sp
+    if sp.issparse(adata.X):
+        X_dense = adata.X.toarray()
+    else:
+        X_dense = adata.X
+    
+    # Z-score normalization: center and scale each gene (column-wise)
+    scaler = StandardScaler()
+    X_normalized = scaler.fit_transform(X_dense)
+    
+    # Convert back to original format
+    if sp.issparse(adata.X):
+        adata.X = sp.csr_matrix(X_normalized)
+    else:
+        adata.X = X_normalized
+    
+    print("EMTAB dataset normalized using Z-score normalization")
+    
+    # Log data statistics after normalization
+    if sp.issparse(adata.X):
+        data_min = adata.X.data.min()
+        data_max = adata.X.data.max()
+        data_mean = adata.X.mean()
+        data_std = np.sqrt(adata.X.power(2).mean() - data_mean**2)
+    else:
+        data_min = adata.X.min()
+        data_max = adata.X.max()
+        data_mean = adata.X.mean()
+        data_std = adata.X.std()
+    
+    print(f"  - Data range after normalization: {data_min:.3f} - {data_max:.3f}")
+    print(f"  - Mean: {data_mean:.3f}, Std: {data_std:.3f}")
+
     # Save the converted AnnData to cache for future use
     with open(cache_file, "wb") as f:
         pickle.dump(adata, f)
     print(f"Saved Ensembl-converted AnnData to {cache_file}")
 
     return adata
-
-
-log_memory("Before loading gene annotations")
-gene_annotation_path = "/labs/Aguiar/SSPA_BRAY/BRay/BRAY_FileTransfer/ENS_mouse_geneannotation.csv"
-gene_annotation = pd.read_csv(gene_annotation_path)
-gene_annotation = gene_annotation.set_index('GeneID')
-log_memory("After loading gene annotations")
-
-def filter_protein_coding_genes(adata, gene_annotation):
-    log_memory("Before filtering protein coding genes")
-    protein_coding_genes = gene_annotation[gene_annotation['Genetype'] == 'protein_coding'].index
-    
-    common_genes = np.intersect1d(adata.var_names, protein_coding_genes)
-    
-    print(f"Total genes: {adata.n_vars}")
-    print(f"Protein-coding genes found: {len(common_genes)}")
-    
-    adata_filtered = adata[:, common_genes].copy()
-
-    log_memory("After filtering protein coding genes")
-    log_array_sizes({
-        'adata.X': adata.X,
-        'adata_filtered.X': adata_filtered.X
-    })
-    
-    return adata_filtered
-
-
-def QCscRNAsizeFactorNormOnly(adata):
-    """Normalize counts in an AnnData object using a median-based size factor per cell (row-wise)."""
-    import numpy as np
-    import scipy.sparse as sp
-
-    X = adata.X.astype(float)
-
-    if sp.issparse(X):
-        UMI_counts_per_cell = np.array(X.sum(axis=1)).flatten()  # Sum over columns → per row (cell)
-    else:
-        UMI_counts_per_cell = X.sum(axis=1)
-
-    median_UMI = np.median(UMI_counts_per_cell)
-    scaling_factors = median_UMI / UMI_counts_per_cell
-    scaling_factors[np.isinf(scaling_factors)] = 0  # Avoid inf if dividing by zero
-
-    if sp.issparse(X):
-        scaling_matrix = sp.diags(scaling_factors)
-        X = scaling_matrix @ X  # Multiply from the left: row-wise scaling
-    else:
-        X = X * scaling_factors[:, np.newaxis]  # Broadcast scaling per row
-
-    adata.X = X
-    return adata
-
-
-def sample_adata(adata, n_cells=None, cell_fraction=None,
-                 n_genes=None, gene_fraction=None, random_state=0):
-    """Return a random subset of the AnnData object.
-
-    Parameters
-    ----------
-    adata : AnnData
-        Input dataset.
-    n_cells : int, optional
-        Number of cells to sample.  Mutually exclusive with ``cell_fraction``.
-    cell_fraction : float, optional
-        Fraction of cells to sample.
-    n_genes : int, optional
-        Number of genes to sample.  Mutually exclusive with ``gene_fraction``.
-    gene_fraction : float, optional
-        Fraction of genes to sample.
-    random_state : int, optional
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    AnnData
-        Subsampled AnnData object.
-    """
-
-    rng = np.random.default_rng(random_state)
-
-    if cell_fraction is not None:
-        n_cells = max(1, int(adata.n_obs * cell_fraction))
-    if n_cells is None or n_cells > adata.n_obs:
-        n_cells = adata.n_obs
-    cell_indices = rng.choice(adata.n_obs, size=n_cells, replace=False)
-
-    if gene_fraction is not None:
-        n_genes = max(1, int(adata.n_vars * gene_fraction))
-    if n_genes is None or n_genes > adata.n_vars:
-        n_genes = adata.n_vars
-    gene_indices = rng.choice(adata.n_vars, size=n_genes, replace=False)
-
-    return adata[cell_indices, :][:, gene_indices].copy()
