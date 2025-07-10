@@ -254,7 +254,6 @@ def prepare_ajm_dataset(cache_file="/labs/Aguiar/SSPA_BRAY/BRay/ajm_dataset_cach
         return ajm_ap, ajm_cyto
     
     # Import required modules at the function's top level
-    import os
     import subprocess
     import scipy.sparse as sp
     

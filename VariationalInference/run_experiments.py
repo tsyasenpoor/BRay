@@ -29,6 +29,7 @@ from data import *
 
 from sklearn.model_selection import train_test_split
 
+
 def custom_train_test_split(*arrays, test_size=0.15, val_szie=0.15, random_state=None):
     n_samples = len(arrays[0])
     indices = np.arange(n_samples)
@@ -63,38 +64,40 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
     for dataset_name, (adata, label_col) in datasets.items():
         print(f"\nRunning experiment on dataset {dataset_name}, label={label_col}")
         
-        if dataset_name == "emtab":
-            # For EMTAB, Y contains both Crohn's disease and ulcerative colitis columns
-            if label_col == "both_labels":
-                Y = adata.obs[['Crohn\'s disease', 'ulcerative colitis']].values.astype(float)
-            else:
-                # Use specific label column if provided
-                Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
-            X = adata.X
-            var_names = list(adata.var_names)
-            
-            # For EMTAB, x_aux includes both age and sex_female columns
-            x_aux = adata.obs[['age', 'sex_female']].values.astype(float)
-            sample_ids = adata.obs.index.tolist()
-        else:
-            # For AJM datasets (ajm_cyto, ajm_ap), use original logic
-            Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
-            X = adata.X  
-            var_names = list(adata.var_names)
+        Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
+        X = adata.X  
+        var_names = list(adata.var_names)
 
+        # Handle auxiliary variables
+        aux_cols = ["age", "sex_female"]  # Default auxiliary variables for EMTAB
+        x_aux = None
+        
+        # Check if auxiliary variables exist in the dataset
+        available_aux_cols = [col for col in aux_cols if col in adata.obs.columns]
+        if available_aux_cols:
+            print(f"Using auxiliary variables: {available_aux_cols}")
+            x_aux = adata.obs[available_aux_cols].values.astype(float)
+            # Add intercept term
+            x_aux = np.column_stack([np.ones(x_aux.shape[0]), x_aux])
+        else:
+            print("No auxiliary variables found, using intercept only")
             x_aux = np.ones((X.shape[0],1)) 
-            sample_ids = adata.obs.index.tolist()
+        
+        sample_ids = adata.obs.index.tolist()
+        
+        log_array_sizes({
+            'X': X,
+            'Y': Y,
+            'x_aux': x_aux
+        })
         
         scores = None
         if 'cyto_seed_score' in adata.obs:
             scores = adata.obs['cyto_seed_score'].values
             print(f"Found cyto_seed_score in dataset with mean value: {np.mean(scores):.4f}")
 
-        hyperparams = hyperparams_map[dataset_name].copy()  
+        hyperparams = hyperparams_map[dataset_name.split('_')[0]].copy()  # Get base dataset name
         d_values = hyperparams.pop("d")
-        # Convert to list if it's a single value
-        if not isinstance(d_values, list):
-            d_values = [d_values]
         for d in d_values:
             print(f"Running with d={d}")
             
@@ -129,13 +132,13 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
 
                 if "error" in results:
                     print(f"Skipping post-processing for d={d} due to training error.")
-                    all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
+                    all_results[f"{dataset_name}_d_{d}"] = results
                     continue 
             
                 if "train_results_df" in results:
-                    train_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_train_results.csv.gz")
-                    val_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_val_results.csv.gz")
-                    test_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_test_results.csv.gz")
+                    train_csv_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_train_results.csv.gz")
+                    val_csv_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_val_results.csv.gz")
+                    test_csv_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_test_results.csv.gz")
                     results["train_results_df"].to_csv(train_csv_path, index=False, compression='gzip')
                     if "val_results_df" in results:
                         results["val_results_df"].to_csv(val_csv_path, index=False, compression='gzip')
@@ -144,6 +147,43 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                     train_df = results.pop("train_results_df")
                     val_df = results.pop("val_results_df", None)
                     test_df = results.pop("test_results_df")
+                
+                # Save theta matrices for each dataset split
+                if "alpha_theta" in results and "omega_theta" in results:
+                    print("Saving theta matrices for train, validation, and test sets...")
+                    
+                    # Extract theta parameters from results
+                    alpha_theta = np.array(results["alpha_theta"])
+                    omega_theta = np.array(results["omega_theta"])
+                    
+                    # Calculate E_theta for training data (posterior mean)
+                    E_theta_train = alpha_theta / np.where(omega_theta > 1e-10, omega_theta, 1e-10)
+                    
+                    # For validation and test sets, we need to fold in the data to get theta values
+                    # This requires calling the fold_in_new_data function
+                    from vi_model_complete import fold_in_new_data
+                    
+                    # Get the data splits from the results
+                    n_train = results["data_info"]["n_train"]
+                    n_val = results["data_info"]["n_val"] 
+                    n_test = results["data_info"]["n_test"]
+                    
+                    # Reconstruct the data splits (this is a bit hacky but necessary)
+                    # We'll need to get the actual data splits from the model evaluation
+                    # For now, let's save what we have and note that val/test theta need fold-in
+                    
+                    # Save training theta
+                    theta_train_df = pd.DataFrame(E_theta_train)
+                    theta_train_df.columns = [f"program_{i+1}" for i in range(E_theta_train.shape[1])]
+                    theta_train_df.insert(0, 'sample_id', sample_ids[:n_train])
+                    theta_train_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_theta_train.csv.gz")
+                    theta_train_df.to_csv(theta_train_path, index=False, compression='gzip')
+                    print(f"Saved training theta matrix to {theta_train_path}")
+                    
+                    # Note: For validation and test theta, we would need to fold in the data
+                    # This requires more complex data handling that's beyond the current scope
+                    # For now, we'll save a note about this limitation
+                    print("Note: Validation and test theta matrices require fold-in procedure and are not saved in this version")
                     
                 main_results = results.copy()
                 if "alpha_beta" in main_results:
@@ -153,19 +193,19 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                 if "top_genes" in main_results:
                     del main_results["top_genes"]
                 
-                results_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_results_with_scores.json.gz")
+                results_json_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_results_with_scores.json.gz")
                 with gzip.open(results_json_path, "wt", encoding="utf-8") as f:
                     json.dump(main_results, f, indent=2)
                     
                 if mask is not None:
                     pathway_results = create_pathway_results(results, var_names, mask, pathway_names)
-                    pathway_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_pathway_results.json.gz")
+                    pathway_json_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_pathway_results.json.gz")
                     with gzip.open(pathway_json_path, "wt", encoding="utf-8") as f:
                         json.dump(pathway_results, f, indent=2)
                     print(f"Saved pathway-specific results to {pathway_json_path}")
                 else:
                     gene_program_results = create_gene_program_results(results, var_names)
-                    gp_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_gene_program_results.json.gz")
+                    gp_json_path = os.path.join(output_dir, f"{dataset_name}_d_{d}_gene_program_results.json.gz")
                     with gzip.open(gp_json_path, "wt", encoding="utf-8") as f:
                         json.dump(gene_program_results, f, indent=2)
                     print(f"Saved complete gene program results to {gp_json_path}")
@@ -176,13 +216,13 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                         results["val_results_df"] = val_df
                     results["test_results_df"] = test_df
 
-                all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
+                all_results[f"{dataset_name}_d_{d}"] = results
             except Exception as e:
                 print(f"--- UNHANDLED EXCEPTION for d={d} ---")
                 print(f"Error: {e}")
                 import traceback
                 traceback.print_exc()
-                all_results[f"{dataset_name}_{label_col}_d_{d}"] = {"error": str(e), "status": "crashed"}
+                all_results[f"{dataset_name}_d_{d}"] = {"error": str(e), "status": "crashed"}
             clear_memory()
 
     return all_results
@@ -331,19 +371,25 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
                                   seed=None, max_iter=100):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
-    # Prepare label matrix (Y) and auxiliary matrix (x_aux) depending on the
-    # dataset and requested label column.  The EMTAB dataset stores Crohn's
-    # disease and ulcerative colitis as separate columns.  When the caller
-    # passes "both_labels" we interpret that as using both columns together.
-    if dataset_name == "emtab" and label_col == "both_labels":
-        Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
-        x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
-    else:
-        Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
-        x_aux = np.ones((adata.shape[0], 1))
-
-    X = adata.X
+    Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
+    X = adata.X  
     var_names = list(adata.var_names)
+    
+    # Handle auxiliary variables
+    aux_cols = ["age", "sex_female"]  # Default auxiliary variables for EMTAB
+    x_aux = None
+    
+    # Check if auxiliary variables exist in the dataset
+    available_aux_cols = [col for col in aux_cols if col in adata.obs.columns]
+    if available_aux_cols:
+        print(f"Using auxiliary variables: {available_aux_cols}")
+        x_aux = adata.obs[available_aux_cols].values.astype(float)
+        # Add intercept term
+        x_aux = np.column_stack([np.ones(x_aux.shape[0]), x_aux])
+    else:
+        print("No auxiliary variables found, using intercept only")
+        x_aux = np.ones((X.shape[0],1)) 
+    
     sample_ids = adata.obs.index.tolist()
     
     log_array_sizes({
@@ -363,7 +409,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         "c":      0.6,
         "a_prime": 2.0, "b_prime": 3.0,
         "a":      0.6,
-        "tau":    1.0, "sigma":   1.0
+        "tau":    3.0, "sigma":   3.0
     }
     
     n_pathways = mask.shape[1]
@@ -410,9 +456,9 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         )
         
         if "train_results_df" in results:
-            train_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_train_results.csv.gz"
-            val_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_val_results.csv.gz"
-            test_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_test_results.csv.gz"
+            train_csv_filename = f"{dataset_name}_combined_pw{n_pathways}_gp{n_gp}_train_results.csv.gz"
+            val_csv_filename = f"{dataset_name}_combined_pw{n_pathways}_gp{n_gp}_val_results.csv.gz"
+            test_csv_filename = f"{dataset_name}_combined_pw{n_pathways}_gp{n_gp}_test_results.csv.gz"
             results["train_results_df"].to_csv(os.path.join(exp_output_dir, train_csv_filename), index=False, compression='gzip')
             if "val_results_df" in results:
                 results["val_results_df"].to_csv(os.path.join(exp_output_dir, val_csv_filename), index=False, compression='gzip')
@@ -427,7 +473,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
             if large_field in main_results:
                 del main_results[large_field]
         
-        results_json_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_results.json.gz"
+        results_json_filename = f"{dataset_name}_combined_pw{n_pathways}_gp{n_gp}_results.json.gz"
         out_path = os.path.join(exp_output_dir, results_json_filename)
         with gzip.open(out_path, "wt", encoding="utf-8") as f:
             json.dump(main_results, f, indent=2)
@@ -436,7 +482,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         extended_pathway_names.extend([f"gene_program_{i+1}" for i in range(n_gp)])
         
         combined_analysis_results = create_pathway_results(results, var_names, extended_mask, extended_pathway_names)
-        combined_analysis_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_analysis.json.gz" # Renamed for clarity
+        combined_analysis_filename = f"{dataset_name}_combined_pw{n_pathways}_gp{n_gp}_analysis.json.gz" # Renamed for clarity
         combined_analysis_path = os.path.join(exp_output_dir, combined_analysis_filename)
         with gzip.open(combined_analysis_path, "wt", encoding="utf-8") as f:
             json.dump(combined_analysis_results, f, indent=2)
@@ -462,19 +508,25 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     print(f"\nRunning pathway-initialized experiment on {dataset_name}, label={label_col}")
     print(f"This will initialize gene programs with pathway information, then let them evolve freely")
     
-    # Prepare Y and x_aux similarly to the combined experiment.  When using the
-    # EMTAB dataset the "both_labels" flag indicates that both Crohn's disease
-    # and ulcerative colitis columns should be used simultaneously.  In that
-    # case we also include age and sex information as auxiliary covariates.
-    if dataset_name == "emtab" and label_col == "both_labels":
-        Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
-        x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
-    else:
-        Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
-        x_aux = np.ones((adata.shape[0], 1))
-
-    X = adata.X
+    Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
+    X = adata.X  
     var_names = list(adata.var_names)
+    
+    # Handle auxiliary variables
+    aux_cols = ["age", "sex_female"]  # Default auxiliary variables for EMTAB
+    x_aux = None
+    
+    # Check if auxiliary variables exist in the dataset
+    available_aux_cols = [col for col in aux_cols if col in adata.obs.columns]
+    if available_aux_cols:
+        print(f"Using auxiliary variables: {available_aux_cols}")
+        x_aux = adata.obs[available_aux_cols].values.astype(float)
+        # Add intercept term
+        x_aux = np.column_stack([np.ones(x_aux.shape[0]), x_aux])
+    else:
+        print("No auxiliary variables found, using intercept only")
+        x_aux = np.ones((X.shape[0],1)) 
+    
     sample_ids = adata.obs.index.tolist()
     
     log_array_sizes({
@@ -494,7 +546,7 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         "c":      0.6,
         "a_prime": 2.0, "b_prime": 3.0,
         "a":      0.6,
-        "tau":    1.0, "sigma":   1.0
+        "tau":    3.0, "sigma":   3.0
     }
     
     n_pathways = mask.shape[1]
@@ -541,9 +593,9 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     )
     
     if "train_results_df" in results:
-        train_csv_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_train_results.csv.gz"
-        val_csv_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_val_results.csv.gz"
-        test_csv_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_test_results.csv.gz"
+        train_csv_filename = f"{dataset_name}_initialized_pw{n_pathways}_train_results.csv.gz"
+        val_csv_filename = f"{dataset_name}_initialized_pw{n_pathways}_val_results.csv.gz"
+        test_csv_filename = f"{dataset_name}_initialized_pw{n_pathways}_test_results.csv.gz"
         results["train_results_df"].to_csv(os.path.join(exp_output_dir, train_csv_filename), index=False, compression='gzip')
         if "val_results_df" in results:
             results["val_results_df"].to_csv(os.path.join(exp_output_dir, val_csv_filename), index=False, compression='gzip')
@@ -558,13 +610,13 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         if large_field in main_results:
             del main_results[large_field]
     
-    results_json_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_results.json.gz"
+    results_json_filename = f"{dataset_name}_initialized_pw{n_pathways}_results.json.gz"
     out_path = os.path.join(exp_output_dir, results_json_filename)
     with gzip.open(out_path, "wt", encoding="utf-8") as f:
         json.dump(main_results, f, indent=2)
     
     gene_program_results = create_gene_program_results(results, var_names)
-    gp_json_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_gene_program_results.json.gz"
+    gp_json_filename = f"{dataset_name}_initialized_pw{n_pathways}_gene_program_results.json.gz"
     gp_path = os.path.join(exp_output_dir, gp_json_filename)
     with gzip.open(gp_path, "wt", encoding="utf-8") as f:
         json.dump(gene_program_results, f, indent=2)
@@ -574,21 +626,24 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
 
 def main():
     parser = argparse.ArgumentParser(description="Run experiments with optional mask, custom d, and VI iterations.")
+    parser.add_argument("--dataset", type=str, choices=["ajm", "emtab"], default="ajm", 
+                       help="Dataset to use: 'ajm' for AJM dataset or 'emtab' for EMTAB dataset")
     parser.add_argument("--mask", action="store_true", help="Use mask derived from pathways matrix")
     parser.add_argument("--d", type=int, help="Value of d when mask is not provided")
     parser.add_argument("--max_iter", type=int, default=100, help="Maximum iterations for variational inference")
     parser.add_argument("--reduced_pathways", type=int, help="Use only this many pathways from the full set (for testing with mask)")
+    
     parser.add_argument("--combined", action="store_true", help="Run combined pathway+gene program configuration")
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
-    parser.add_argument("--dataset", type=str, default="cyto", choices=["cyto", "ap", "emtab"], help="Which dataset to use: cyto, ap, or emtab")
-    parser.add_argument("--label", type=str, help="Label column to use (for EMTAB dataset)")
+    
+    
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-
-    if not args.mask and not args.initialized and args.d is None and not args.combined and args.dataset != "emtab":
-        parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified (except for emtab).")
-
+    
+    if not args.mask and not args.initialized and args.d is None and not args.combined:
+        parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified.")
+    
     # Determine the base output directory (e.g., .../masked, .../unmasked)
     if args.combined:
         base_output_dir_name = "combined"
@@ -606,233 +661,197 @@ def main():
     
     # Create a timestamp-based subdirectory for this specific run
     date_time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # This run_dir is the single folder where all results for this execution will go.
     run_dir = os.path.join(base_output_dir, date_time_stamp) 
     os.makedirs(run_dir, exist_ok=True)
-
-    # --- DATASET LOADING LOGIC ---
-    datasets = {}
-    hyperparams_map = {}
-    mask_array = None
-    pathway_names_list = None
-
-    if args.dataset == "emtab":
-        # Load EMTAB data from emtab_data.py (already imported above)
-        emtab_data = prepare_and_load_emtab()
-        # For EMTAB, use both label columns by default
-        label_col = args.label if args.label else "both_labels"
-        print(f"Loaded EMTAB data with shape {emtab_data.shape} and label column '{label_col}'")
-        datasets["emtab"] = (emtab_data, label_col)
-        
-        # Pathway mask logic for EMTAB (same as AJM datasets)
-        if args.mask or args.combined or args.initialized:
-            gene_names = list(emtab_data.var_names)
-            if args.reduced_pathways and args.reduced_pathways > 0:
-                if args.reduced_pathways >= len(pathways):
-                    print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
-                    pathway_names_list = list(pathways.keys())
-                else:
-                    print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
-                    random.seed(42)
-                    pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
-                    print(f"Selected {len(pathway_names_list)} pathways randomly")
-            else:
-                pathway_names_list = list(pathways.keys())
-            print(f"Number of genes: {len(gene_names)}")
-            print(f"Number of pathways: {len(pathway_names_list)}")
-            M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
-            print("Filling matrix M...")
-            chunk_size = 100
-            total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
-            for chunk_idx in range(total_chunks):
-                start_idx = chunk_idx * chunk_size
-                end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
-                current_pathways = pathway_names_list[start_idx:end_idx]
-                print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
-                for pathway in current_pathways:
-                    gene_list = pathways[pathway]
-                    for gene in gene_list:
-                        if gene in M.index:
-                            M.loc[gene, pathway] = 1
-            print(f"Matrix M created with shape {M.shape}")
-            log_array_sizes({'M': M.values, 'emtab_data.X': emtab_data.X})
-            mask_array = M.values
-            print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
-            non_zero_entries = np.count_nonzero(mask_array)
-            total_entries = mask_array.size
-            sparsity = 100 * (1 - non_zero_entries / total_entries)
-            print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
-            del M
-            clear_memory()
-        
-        # Set up hyperparams for EMTAB
-        hyperparams_emtab = {
-            "c_prime": 2.0,  "d_prime": 3.0,
-            "c":      0.6,
-            "a_prime":2.0,   "b_prime": 3.0,
-            "a":      0.6,
-            "tau":    1.0,   "sigma":   1.0,
-        }
-        if args.mask:
-            hyperparams_emtab["d"] = mask_array.shape[1]
-            print(f"Using mask-based d value: {mask_array.shape[1]}")
-        elif args.combined:
-            print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
-        elif args.initialized:
-            print(f"Initialized config will use d = {mask_array.shape[1]}")
-        else:
-            if args.d is not None:
-                hyperparams_emtab["d"] = args.d
-                print(f"Using specified d value: {args.d}")
-            else:
-                hyperparams_emtab["d"] = 50
-                print(f"Using default d value: 50")
-        hyperparams_map = {"emtab": hyperparams_emtab}
-
-    else:
-        # Load AJM data (cyto or ap)
+    
+    # Load dataset based on argument
+    if args.dataset == "ajm":
+        print("Loading AJM dataset...")
         ajm_ap_samples, ajm_cyto_samples = prepare_ajm_dataset()
-        if args.dataset == "cyto":
-            ajm_cyto_filtered = filter_protein_coding_genes(ajm_cyto_samples, gene_annotation)
-            adata = ajm_cyto_filtered
-            label_col = "cyto"
-            del ajm_ap_samples
-            del ajm_cyto_samples
-        elif args.dataset == "ap":
-            ajm_ap_filtered = filter_protein_coding_genes(ajm_ap_samples, gene_annotation)
-            adata = ajm_ap_filtered
-            label_col = "ap"
-            del ajm_ap_samples
-            del ajm_cyto_samples
-        else:
-            raise ValueError(f"Unknown dataset: {args.dataset}")
-        clear_memory()
-
-        # For cyto, add cyto_seed_score
-        if args.dataset == "cyto":
+        adata = filter_protein_coding_genes(ajm_cyto_samples, gene_annotation)
+        
+        # Add cyto_seed_score for AJM dataset
+        common_genes = np.intersect1d(adata.var_names, CYTOSEED_ensembl)
+        print(f"Found {len(common_genes)} common genes between dataset and CYTOSEED_ensembl")
+        cyto_seed_mask = np.array([gene in CYTOSEED_ensembl for gene in adata.var_names])
+        cyto_seed_scores = adata.X[:, cyto_seed_mask].sum(axis=1)
+        adata.obs['cyto_seed_score'] = cyto_seed_scores
+        
+        # Define labels and auxiliary variables for AJM
+        label_cols = ["cyto"]
+        aux_cols = []  # AJM doesn't have auxiliary variables
+        
+        del ajm_ap_samples
+        del ajm_cyto_samples
+        
+    elif args.dataset == "emtab":
+        print("Loading EMTAB dataset...")
+        from data import prepare_and_load_emtab
+        adata = prepare_and_load_emtab()
+        
+        # Define labels and auxiliary variables for EMTAB
+        label_cols = ["Crohn's disease", "ulcerative colitis"]
+        aux_cols = ["age", "sex_female"]
+        
+        # Add cyto_seed_score for EMTAB dataset (if CYTOSEED_ensembl is available)
+        if 'CYTOSEED_ensembl' in globals():
             common_genes = np.intersect1d(adata.var_names, CYTOSEED_ensembl)
-            print(f"Found {len(common_genes)} common genes between dataset and CYTOSEED_ensembl")
+            print(f"Found {len(common_genes)} common genes between EMTAB dataset and CYTOSEED_ensembl")
             cyto_seed_mask = np.array([gene in CYTOSEED_ensembl for gene in adata.var_names])
             cyto_seed_scores = adata.X[:, cyto_seed_mask].sum(axis=1)
             adata.obs['cyto_seed_score'] = cyto_seed_scores
-
-        # Pathway mask logic (for cyto only)
-        if args.mask or args.combined or args.initialized:
-            gene_names = list(adata.var_names)
-            if args.reduced_pathways and args.reduced_pathways > 0:
-                if args.reduced_pathways >= len(pathways):
-                    print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
-                    pathway_names_list = list(pathways.keys())
-                else:
-                    print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
-                    random.seed(42)
-                    pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
-                    print(f"Selected {len(pathway_names_list)} pathways randomly")
-            else:
+    
+    clear_memory()
+    
+    mask_array = None # Renamed from mask to avoid conflict with args.mask
+    pathway_names_list = None # Renamed from pathway_names
+    
+    if args.mask or args.combined or args.initialized:
+        gene_names = list(adata.var_names)
+        
+        if args.reduced_pathways and args.reduced_pathways > 0:
+            if args.reduced_pathways >= len(pathways):
+                print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
                 pathway_names_list = list(pathways.keys())
-            print(f"Number of genes: {len(gene_names)}")
-            print(f"Number of pathways: {len(pathway_names_list)}")
-            M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
-            print("Filling matrix M...")
-            chunk_size = 100
-            total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
-            for chunk_idx in range(total_chunks):
-                start_idx = chunk_idx * chunk_size
-                end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
-                current_pathways = pathway_names_list[start_idx:end_idx]
-                print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
-                for pathway in current_pathways:
-                    gene_list = pathways[pathway]
-                    for gene in gene_list:
-                        if gene in M.index:
-                            M.loc[gene, pathway] = 1
-            print(f"Matrix M created with shape {M.shape}")
-            log_array_sizes({'M': M.values, 'adata.X': adata.X})
-            mask_array = M.values
-            print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
-            non_zero_entries = np.count_nonzero(mask_array)
-            total_entries = mask_array.size
-            sparsity = 100 * (1 - non_zero_entries / total_entries)
-            print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
-            del M
-            clear_memory()
-        # Set up hyperparams for cyto/ap
-        hyperparams_cyto = {
+            else:
+                print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
+                random.seed(42)
+                pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
+                print(f"Selected {len(pathway_names_list)} pathways randomly")
+        else:
+            pathway_names_list = list(pathways.keys())
+        
+        print(f"Number of genes: {len(gene_names)}")
+        print(f"Number of pathways: {len(pathway_names_list)}")
+        
+        M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
+        
+        print("Filling matrix M...")
+        chunk_size = 100
+        total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
+        
+        for chunk_idx in range(total_chunks):
+            start_idx = chunk_idx * chunk_size
+            end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
+            current_pathways = pathway_names_list[start_idx:end_idx]
+            
+            print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
+            
+            for pathway in current_pathways:
+                gene_list = pathways[pathway]
+                for gene in gene_list:
+                    if gene in M.index:
+                        M.loc[gene, pathway] = 1
+        
+        print(f"Matrix M created with shape {M.shape}")
+        log_array_sizes({'M': M.values, 'adata.X': adata.X})
+        
+        mask_array = M.values
+        
+        print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
+        non_zero_entries = np.count_nonzero(mask_array)
+        total_entries = mask_array.size
+        sparsity = 100 * (1 - non_zero_entries / total_entries)
+        print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
+        
+        del M
+        clear_memory()
+    
+    # Define hyperparameters based on dataset
+    if args.dataset == "ajm":
+        hyperparams = {
             "c_prime": 2.0,  "d_prime": 3.0,
             "c":      0.6,
             "a_prime":2.0,   "b_prime": 3.0,
             "a":      0.6,
-            "tau":    1.0,   "sigma":   1.0,
+            "tau":    3.0,   "sigma":   3.0,
         }
-        if args.mask:
-            hyperparams_cyto["d"] = mask_array.shape[1]
-            print(f"Using mask-based d value: {mask_array.shape[1]}")
-        elif args.combined:
-            print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
-        elif args.initialized:
-            print(f"Initialized config will use d = {mask_array.shape[1]}")
-        else:
-            if args.d is not None:
-                hyperparams_cyto["d"] = args.d
-                print(f"Using specified d value: {args.d}")
-            else:
-                hyperparams_cyto["d"] = 50
-                print(f"Using default d value: 50")
-        dataset_key = "ajm_cyto" if args.dataset == "cyto" else "ajm_ap"
-        hyperparams_map = {dataset_key: hyperparams_cyto}
-        datasets = {dataset_key: (adata, label_col)}
+    elif args.dataset == "emtab":
+        hyperparams = {
+            "c_prime": 2.0,  "d_prime": 3.0,
+            "c":      0.6,
+            "a_prime":2.0,   "b_prime": 3.0,
+            "a":      0.6,
+            "tau":    3.0,   "sigma":   3.0,
+        }
+    
+    if args.mask:
+        hyperparams["d"] = [mask_array.shape[1]]
+        print(f"Using mask-based d value: {mask_array.shape[1]}")
+    elif args.combined:
+        # d value set within run_combined_gp_and_pathway_experiment
+        print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
+        # hyperparams is not directly used by run_combined_gp_and_pathway_experiment for 'd'
+    elif args.initialized:
+        # d value set within run_pathway_initialized_experiment
+        print(f"Initialized config will use d = {mask_array.shape[1]}")
+    else: # Regular unmasked gene program mode
+        hyperparams["d"] = [args.d]
+        print(f"Using specified d value: {args.d}")
+    
+    hyperparams_map = {
+        args.dataset: hyperparams,
+    }
+
+    # Create datasets dictionary with all labels
+    datasets = {}
+    for label_col in label_cols:
+        datasets[f"{args.dataset}_{label_col}"] = (adata, label_col)
 
     all_results = {}
-
-    # --- EXPERIMENT RUNNING LOGIC ---
+    
     if args.combined:
-        print("\nRunning COMBINED PATHWAY + GENE PROGRAM configuration:")
+        print(f"\nRunning COMBINED PATHWAY + GENE PROGRAM configuration for {args.dataset}:")
         print(f"This will use {mask_array.shape[1]} pathway dimensions plus {args.n_gp} freely learned gene program dimensions")
-        dataset_name = list(datasets.keys())[0]
-        adata, label_col = datasets[dataset_name]
-        combined_results = run_combined_gp_and_pathway_experiment(
-            dataset_name, adata, label_col, mask_array, pathway_names_list,
-            n_gp=args.n_gp, output_dir=run_dir,
-            seed=None, max_iter=args.max_iter
-        )
-        all_results["combined_config"] = combined_results
+        
+        # Run combined experiment for each label
+        for label_col in label_cols:
+            dataset_name = f"{args.dataset}_{label_col}"
+            adata_subset, label_col_subset = datasets[dataset_name]
+            combined_results = run_combined_gp_and_pathway_experiment(
+                dataset_name, adata_subset, label_col_subset, mask_array, pathway_names_list,
+                n_gp=args.n_gp, output_dir=run_dir, # Pass run_dir as output_dir
+                seed=None, max_iter=args.max_iter
+            )
+            all_results[f"combined_config_{label_col}"] = combined_results
     
     elif args.initialized:
-        print("\nRunning PATHWAY-INITIALIZED configuration:")
+        print(f"\nRunning PATHWAY-INITIALIZED configuration for {args.dataset}:")
         print(f"This will initialize {mask_array.shape[1]} gene programs using pathway information, then let them evolve freely")
-        dataset_name = list(datasets.keys())[0]
-        adata, label_col = datasets[dataset_name]
-        initialized_results = run_pathway_initialized_experiment(
-            dataset_name, adata, label_col, mask_array, pathway_names_list,
-            output_dir=run_dir, seed=None, max_iter=args.max_iter
-        )
-        all_results["initialized_config"] = initialized_results
+        
+        # Run initialized experiment for each label
+        for label_col in label_cols:
+            dataset_name = f"{args.dataset}_{label_col}"
+            adata_subset, label_col_subset = datasets[dataset_name]
+            initialized_results = run_pathway_initialized_experiment(
+                dataset_name, adata_subset, label_col_subset, mask_array, pathway_names_list,
+                output_dir=run_dir, seed=None, max_iter=args.max_iter # Pass run_dir
+            )
+            all_results[f"initialized_config_{label_col}"] = initialized_results
     
     else: # Standard masked or unmasked configuration
-        print("\nRunning standard configuration:")
+        print(f"\nRunning standard configuration for {args.dataset}:")
         current_mask_for_run = mask_array if args.mask else None
-        
         if args.mask:
             print(f"Using MASKED configuration with {mask_array.shape[1]} pathways")
         else:
-            dval = hyperparams_map[list(datasets.keys())[0]]["d"]
-            if isinstance(dval, list):
-                dval = dval[0]
-            print(f"Using UNMASKED configuration with {dval} gene programs")
+            print(f"Using UNMASKED configuration with {args.d} gene programs")
 
         std_results = run_all_experiments(
-            datasets, hyperparams_map, output_dir=run_dir,
+            datasets, hyperparams_map, output_dir=run_dir, # Pass run_dir
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
             pathway_names=pathway_names_list
         )
         all_results.update(std_results)
 
     print("\nAll experiments completed!")
-    print(f"Results saved to: {run_dir}")
+    print(f"Results saved to: {run_dir}") # Print the timestamped directory
 
     print("\nSummary of results:")
-    print("-" * 80)
-    print(f"{'Experiment':<30} {'Train Acc':<10} {'Val Acc':<10} {'Test Acc':<10} {'Train F1':<10} {'Val F1':<10} {'Test F1':<10}")
-    print("-" * 60)
+    print("-" * 100)
+    print(f"{'Experiment':<40} {'Train Acc':<10} {'Val Acc':<10} {'Test Acc':<10} {'Train F1':<10} {'Val F1':<10} {'Test F1':<10}")
+    print("-" * 100)
     for exp_name, res in all_results.items():
         if res and 'train_metrics' in res and 'test_metrics' in res and 'val_metrics' in res: 
             train_acc = res['train_metrics']['accuracy']
@@ -841,9 +860,10 @@ def main():
             train_f1  = res['train_metrics']['f1']
             val_f1    = res['val_metrics']['f1']
             test_f1   = res['test_metrics']['f1']
-            print(f"{exp_name:<30} {train_acc:<10.4f} {val_acc:<10.4f} {test_acc:<10.4f} {train_f1:<10.4f} {val_f1:<10} {test_f1:<10.4f}")
+            print(f"{exp_name:<40} {train_acc:<10.4f} {val_acc:<10.4f} {test_acc:<10.4f} {train_f1:<10.4f} {val_f1:<10} {test_f1:<10.4f}")
         else:
-            print(f"{exp_name:<30} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
+            print(f"{exp_name:<40} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
+
 
 if __name__ == "__main__":
     import sys

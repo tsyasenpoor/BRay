@@ -28,28 +28,11 @@ jax.config.update('jax_platform_name', 'cpu')
 @jax.jit
 def process_phi_batch(E_log_theta_batch, E_log_beta, x_batch):
     log_phi_unnormalized = E_log_theta_batch[:, None, :] + E_log_beta[None, :, :]
-    # Clip values to avoid extreme exponentials in the softmax which can cause
-    # numerical overflow and eventually trigger floating point errors during JAX
-    # JIT execution.
-    log_phi_unnormalized = jnp.clip(log_phi_unnormalized, -20.0, 20.0)
     phi_batch = jax.nn.softmax(log_phi_unnormalized, axis=2)
     
     alpha_beta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=0)
     alpha_theta_batch_update = jnp.sum(x_batch[:, :, None] * phi_batch, axis=1)
     return alpha_beta_batch_update, alpha_theta_batch_update
-
-def sanitize_q_params(params):
-    """Ensure variational parameters remain finite to avoid hard crashes."""
-    sanitized = {}
-    for k, v in params.items():
-        if isinstance(v, jnp.ndarray):
-            arr = jnp.nan_to_num(v, nan=0.0, posinf=1e6, neginf=-1e6)
-            if k.startswith(("alpha", "omega", "gig")) or k.startswith("Sigma"):
-                arr = jnp.clip(arr, 1e-6, 1e6)
-            sanitized[k] = arr
-        else:
-            sanitized[k] = v
-    return sanitized
 
 @jax.jit
 def update_regression_variational(mu_gamma_old, Sigma_gamma_old, mu_upsilon_old, Sigma_upsilon_old,
@@ -246,33 +229,44 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
     if using_mask:
         alpha_beta_new = alpha_beta_new * mask
 
-    # --- 5. STABILIZED PARALLEL UPDATES for rate and hyperprior parameters ---
-    print("Updating rate (omega) and hyperprior (eta, xi) parameters...")
+    # --- 5. RESTRUCTURED & STABILIZED SEQUENTIAL UPDATES for rate and hyperprior parameters ---
+    print("Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...")
 
-    # Compute expectations using OLD rate parameters
-    E_beta_old = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
-    E_theta_old = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
+    # Update hyperprior for beta (eta) first
+    # This update only depends on E_beta, which we will compute with its new alpha and old omega
+    E_beta_temp_for_eta = alpha_beta_new / jnp.maximum(omega_beta_old, 1e-10)
     if using_mask:
-        E_beta_old = E_beta_old * mask
-
-    # Update hyperpriors (eta, xi)
+        E_beta_temp_for_eta = E_beta_temp_for_eta * mask
+        
     alpha_eta_new = c_prime + c * jnp.sum(mask, axis=1) if using_mask else c_prime + c * d
-    omega_eta_new = jnp.sum(E_beta_old, axis=1) + (c_prime / d_prime)
-    E_eta_new = alpha_eta_new / jnp.maximum(omega_eta_new, 1e-10)
+    omega_eta_new = jnp.sum(E_beta_temp_for_eta, axis=1) + (c_prime / d_prime)
+    omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e6) # SAFEGUARD: Clip to prevent extreme values
+    E_eta_new = alpha_eta_new / omega_eta_new # Use new omega_eta for expectation
+
+    # Now update omega_beta using the NEW E_eta and an E_theta based on new alpha_theta
+    E_theta_temp_for_beta = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
+    omega_beta_new = E_eta_new[:, None] + jnp.sum(E_theta_temp_for_beta, axis=0)[None, :]
+    omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e6) # SAFEGUARD: Clip
+
+    # --- Now, do the same for the theta side ---
+
+    # Update hyperprior for theta (xi) first
+    # This update depends on E_theta, which we calculate with new alpha and old omega
+    E_theta_temp_for_xi = alpha_theta_new / jnp.maximum(omega_theta_old, 1e-10)
 
     alpha_xi_new = a_prime + a * d
-    omega_xi_new = jnp.sum(E_theta_old, axis=1) + (a_prime / b_prime)
-    E_xi_new = alpha_xi_new / jnp.maximum(omega_xi_new, 1e-10)
+    omega_xi_new = jnp.sum(E_theta_temp_for_xi, axis=1) + (a_prime / b_prime)
+    omega_xi_new = jnp.clip(omega_xi_new, 1e-6, 1e6) # SAFEGUARD: Clip
+    E_xi_new = alpha_xi_new / omega_xi_new # Use new omega_xi for expectation
 
-    # Update rate parameters using the consistent old expectations
-    omega_beta_new = E_eta_new[:, None] + jnp.sum(E_theta_old, axis=0)[None, :]
-    omega_theta_new = E_xi_new[:, None] + jnp.sum(E_beta_old, axis=0)[None, :]
-
-    # SAFEGUARDS against extreme values
-    omega_eta_new = jnp.clip(omega_eta_new, 1e-6, 1e6)
-    omega_beta_new = jnp.clip(omega_beta_new, 1e-6, 1e6)
-    omega_xi_new = jnp.clip(omega_xi_new, 1e-6, 1e6)
-    omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e6)
+    # CRITICAL FIX: Update omega_theta using the NEW E_xi and an E_beta calculated
+    # from the NEW alpha_beta and the NEW omega_beta.
+    E_beta_new = alpha_beta_new / omega_beta_new # Use the just-updated omega_beta_new
+    if using_mask:
+        E_beta_new = E_beta_new * mask
+        
+    omega_theta_new = E_xi_new[:, None] + jnp.sum(E_beta_new, axis=0)[None, :]
+    omega_theta_new = jnp.clip(omega_theta_new, 1e-6, 1e6) # SAFEGUARD: Clip
 
     # --- 6. Assemble the new parameter dictionary (no change) ---
     q_params_new = {
@@ -289,7 +283,7 @@ def update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=None):
         "gig_b_ups": gig_b_ups_new,
     }
 
-    return sanitize_q_params(q_params_new)
+    return q_params_new
 
 def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
     
@@ -451,7 +445,7 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 
     entropy = H_eta + H_beta + H_xi + H_theta + H_gamma + H_upsilon + H_lambda_sq
     
-    elbo = expected_log_joint - entropy
+    elbo = expected_log_joint + entropy
     
     print("\n--- ELBO Breakdown ---")
     print(f"E[log p(eta)]:       {elbo_p_eta:.4f}")
@@ -478,7 +472,7 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 def run_variational_inference(x_data, y_data, x_aux, hyperparams,
                               q_params=None, max_iters=100, tol=1e-6,
                               verbose=True, mask=None,
-                              patience=5, min_delta=1e-3, beta_init=None,
+                              patience=5, min_delta=1e3, beta_init=None,
                               seed=None):
     
     # --- SETUP (largely the same) ---
@@ -518,7 +512,6 @@ def run_variational_inference(x_data, y_data, x_aux, hyperparams,
         
         # 1. Update all variational parameters
         q_params = update_q_params(q_params, x_data, y_data, x_aux, hyperparams, mask=mask)
-        q_params = sanitize_q_params(q_params)
         
         # 2. Compute the ELBO to monitor convergence
         elbo_val = compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=mask)
@@ -853,7 +846,7 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         q_params, elbo_hist = run_variational_inference(
             X_train, y_train, XA_train, hyperparams,
             q_params=None, max_iters=max_iters, verbose=True,
-            mask=mask, patience=5, min_delta=1e-3,
+            mask=mask, patience=5, min_delta=1e3,
             beta_init=beta_init,
             seed=seed
         )

@@ -57,7 +57,10 @@ def generate_synthetic_data(n_samples: int, n_genes: int, n_programs: int,
 def run_sampler(x: np.ndarray, y: np.ndarray, x_aux: np.ndarray,
                 n_programs: int, iterations: int = 50, seed: int = 0):
     sampler = SpikeSlabGibbsSampler(x, y, x_aux, n_programs, seed=seed)
-    for _ in range(iterations):
+    print(f"Starting Gibbs sampling for {iterations} iterations...")
+    for it in range(iterations):
+        if (it + 1) % 10 == 0 or it == 0:
+            print(f"  Iteration {it + 1}/{iterations}")
         sampler._update_latent_counts_z()
         sampler._update_beta()
         sampler._update_eta()
@@ -67,6 +70,7 @@ def run_sampler(x: np.ndarray, y: np.ndarray, x_aux: np.ndarray,
         sampler._update_s_upsilon()
         sampler._update_w_upsilon()
         sampler.upsilon = sampler.s_upsilon * sampler.w_upsilon
+    print("Gibbs sampling complete.")
     return sampler
 
 
