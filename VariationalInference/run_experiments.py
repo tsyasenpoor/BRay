@@ -636,6 +636,7 @@ def main():
     parser.add_argument("--combined", action="store_true", help="Run combined pathway+gene program configuration")
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
+    parser.add_argument("--grid_search", action="store_true", help="Run grid search for EMTAB hyperparameters")
     
     
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
@@ -701,6 +702,26 @@ def main():
             cyto_seed_mask = np.array([gene in CYTOSEED_ensembl for gene in adata.var_names])
             cyto_seed_scores = adata.X[:, cyto_seed_mask].sum(axis=1)
             adata.obs['cyto_seed_score'] = cyto_seed_scores
+
+        if args.grid_search:
+            from grid_search import grid_search_emtab
+            param_grid = {
+                "c_prime": [2.0, 3.0],
+                "d_prime": [3.0],
+                "c": [0.6],
+                "a_prime": [2.0],
+                "b_prime": [3.0],
+                "a": [0.6],
+                "tau": [3.0],
+                "sigma": [3.0],
+                "d": [50, 100]
+            }
+            best = grid_search_emtab(param_grid)
+            print("Best parameters:", best["hyperparams"])
+            print("Best threshold:", best["best_threshold"])
+            print("Best validation F1:", best["val_f1"])
+            print("Validation Brier:", best["val_brier"], "ECE:", best["val_ece"])
+            return
     
     clear_memory()
     
