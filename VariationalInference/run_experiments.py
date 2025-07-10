@@ -30,6 +30,7 @@ from data import *
 from sklearn.model_selection import train_test_split
 
 
+
 def custom_train_test_split(*arrays, test_size=0.15, val_szie=0.15, random_state=None):
     n_samples = len(arrays[0])
     indices = np.arange(n_samples)
@@ -636,8 +637,8 @@ def main():
     parser.add_argument("--combined", action="store_true", help="Run combined pathway+gene program configuration")
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
-    
-    
+    parser.add_argument("--dataset", type=str, default="cyto", choices=["cyto", "ap", "emtab"], help="Which dataset to use: cyto, ap, or emtab")
+    parser.add_argument("--label", type=str, help="Label column to use (for EMTAB dataset)")
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     
@@ -701,66 +702,49 @@ def main():
             cyto_seed_mask = np.array([gene in CYTOSEED_ensembl for gene in adata.var_names])
             cyto_seed_scores = adata.X[:, cyto_seed_mask].sum(axis=1)
             adata.obs['cyto_seed_score'] = cyto_seed_scores
-    
-    clear_memory()
-    
-    mask_array = None # Renamed from mask to avoid conflict with args.mask
-    pathway_names_list = None # Renamed from pathway_names
-    
-    if args.mask or args.combined or args.initialized:
-        gene_names = list(adata.var_names)
-        
-        if args.reduced_pathways and args.reduced_pathways > 0:
-            if args.reduced_pathways >= len(pathways):
-                print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
-                pathway_names_list = list(pathways.keys())
+
+        # Pathway mask logic (for cyto only)
+        if args.mask or args.combined or args.initialized:
+            gene_names = list(adata.var_names)
+            if args.reduced_pathways and args.reduced_pathways > 0:
+                if args.reduced_pathways >= len(pathways):
+                    print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
+                    pathway_names_list = list(pathways.keys())
+                else:
+                    print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
+                    random.seed(42)
+                    pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
+                    print(f"Selected {len(pathway_names_list)} pathways randomly")
             else:
-                print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
-                random.seed(42)
-                pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
-                print(f"Selected {len(pathway_names_list)} pathways randomly")
-        else:
-            pathway_names_list = list(pathways.keys())
-        
-        print(f"Number of genes: {len(gene_names)}")
-        print(f"Number of pathways: {len(pathway_names_list)}")
-        
-        M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
-        
-        print("Filling matrix M...")
-        chunk_size = 100
-        total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
-        
-        for chunk_idx in range(total_chunks):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
-            current_pathways = pathway_names_list[start_idx:end_idx]
-            
-            print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
-            
-            for pathway in current_pathways:
-                gene_list = pathways[pathway]
-                for gene in gene_list:
-                    if gene in M.index:
-                        M.loc[gene, pathway] = 1
-        
-        print(f"Matrix M created with shape {M.shape}")
-        log_array_sizes({'M': M.values, 'adata.X': adata.X})
-        
-        mask_array = M.values
-        
-        print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
-        non_zero_entries = np.count_nonzero(mask_array)
-        total_entries = mask_array.size
-        sparsity = 100 * (1 - non_zero_entries / total_entries)
-        print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
-        
-        del M
-        clear_memory()
-    
-    # Define hyperparameters based on dataset
-    if args.dataset == "ajm":
-        hyperparams = {
+                pathway_names_list = list(pathways.keys())
+            print(f"Number of genes: {len(gene_names)}")
+            print(f"Number of pathways: {len(pathway_names_list)}")
+            M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
+            print("Filling matrix M...")
+            chunk_size = 100
+            total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
+            for chunk_idx in range(total_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
+                current_pathways = pathway_names_list[start_idx:end_idx]
+                print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
+                for pathway in current_pathways:
+                    gene_list = pathways[pathway]
+                    for gene in gene_list:
+                        if gene in M.index:
+                            M.loc[gene, pathway] = 1
+            print(f"Matrix M created with shape {M.shape}")
+            log_array_sizes({'M': M.values, 'adata.X': adata.X})
+            mask_array = M.values
+            print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
+            non_zero_entries = np.count_nonzero(mask_array)
+            total_entries = mask_array.size
+            sparsity = 100 * (1 - non_zero_entries / total_entries)
+            print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
+            del M
+            clear_memory()
+        # Set up hyperparams for cyto/ap
+        hyperparams_cyto = {
             "c_prime": 2.0,  "d_prime": 3.0,
             "c":      0.6,
             "a_prime":2.0,   "b_prime": 3.0,
