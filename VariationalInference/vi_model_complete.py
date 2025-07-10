@@ -445,7 +445,7 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 
     entropy = H_eta + H_beta + H_xi + H_theta + H_gamma + H_upsilon + H_lambda_sq
     
-    elbo = expected_log_joint + entropy
+    elbo = expected_log_joint - entropy
     
     print("\n--- ELBO Breakdown ---")
     print(f"E[log p(eta)]:       {elbo_p_eta:.4f}")
@@ -472,7 +472,7 @@ def compute_elbo(x_data, y_data, x_aux, hyperparams, q_params, mask=None):
 def run_variational_inference(x_data, y_data, x_aux, hyperparams,
                               q_params=None, max_iters=100, tol=1e-6,
                               verbose=True, mask=None,
-                              patience=5, min_delta=1e3, beta_init=None,
+                              patience=5, min_delta=1e-3, beta_init=None,
                               seed=None):
     
     # --- SETUP (largely the same) ---
@@ -846,7 +846,7 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         q_params, elbo_hist = run_variational_inference(
             X_train, y_train, XA_train, hyperparams,
             q_params=None, max_iters=max_iters, verbose=True,
-            mask=mask, patience=5, min_delta=1e3,
+            mask=mask, patience=5, min_delta=1e-3,
             beta_init=beta_init,
             seed=seed
         )
