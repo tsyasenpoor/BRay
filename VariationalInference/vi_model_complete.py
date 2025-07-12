@@ -887,33 +887,36 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
         E_beta_final = E_beta_final * mask
     top_genes = extract_top_genes(E_beta_final, var_names)
 
-    train_df = pd.DataFrame({
-        'sample_id': ids_train,
-        'true_label': y_train.reshape(-1) if len(y_train.shape) == 2 and y_train.shape[1] == 1 else y_train,
-        'probability': np.round(np.array(train_metrics['probabilities']).reshape(-1), 4) if len(y_train.shape) <= 1 or y_train.shape[1] == 1 else np.round(np.array(train_metrics['probabilities']), 4),
-        'predicted_label': (np.array(train_metrics['probabilities']) >= .5).astype(int).reshape(-1) if len(y_train.shape) <= 1 or y_train.shape[1] == 1 else (np.array(train_metrics['probabilities']) >= 0.5).astype(int),
-        'cyto_seed_score': scores_train 
-    })
+    if len(y_train.shape) <= 1 or y_train.shape[1] == 1:
+        # --- Binary classification ---
+        train_df = pd.DataFrame({
+            'sample_id': ids_train,
+            'true_label': y_train.reshape(-1) if len(y_train.shape) == 2 and y_train.shape[1] == 1 else y_train,
+            'probability': np.round(np.array(train_metrics['probabilities']).reshape(-1), 4),
+            'predicted_label': (np.array(train_metrics['probabilities']) >= 0.5).astype(int).reshape(-1),
+            'cyto_seed_score': scores_train
+        })
 
-    val_df = pd.DataFrame({
-        'sample_id': ids_val,
-        'true_label': y_val.reshape(-1) if len(y_val.shape) == 2 and y_val.shape[1] == 1 else y_val,
-        'probability': np.round(np.array(val_metrics['probabilities']).reshape(-1), 4) if len(y_val.shape) <= 1 or y_val.shape[1] == 1 else np.round(np.array(val_metrics['probabilities']), 4),
-        'predicted_label': (np.array(val_metrics['probabilities']) >= .5).astype(int).reshape(-1) if len(y_val.shape) <= 1 or y_val.shape[1] == 1 else (np.array(val_metrics['probabilities']) >= 0.5).astype(int),
-        'cyto_seed_score': scores_val
-    })
-    
-    test_df = pd.DataFrame({
-        'sample_id': ids_test,
-        'true_label': y_test.reshape(-1) if len(y_test.shape) == 2 and y_test.shape[1] == 1 else y_test,
-        'probability': np.round(np.array(test_metrics['probabilities']).reshape(-1), 4) if len(y_test.shape) <= 1 or y_test.shape[1] == 1 else np.round(np.array(test_metrics['probabilities']), 4),
-        'predicted_label': (np.array(test_metrics['probabilities']) >= 0.5).astype(int).reshape(-1) if len(y_test.shape) <= 1 or y_test.shape[1] == 1 else (np.array(test_metrics['probabilities']) >= 0.5).astype(int),
-        'cyto_seed_score': scores_test  
-    })
+        val_df = pd.DataFrame({
+            'sample_id': ids_val,
+            'true_label': y_val.reshape(-1) if len(y_val.shape) == 2 and y_val.shape[1] == 1 else y_val,
+            'probability': np.round(np.array(val_metrics['probabilities']).reshape(-1), 4),
+            'predicted_label': (np.array(val_metrics['probabilities']) >= 0.5).astype(int).reshape(-1),
+            'cyto_seed_score': scores_val
+        })
 
-    if len(y_train.shape) > 1 and y_train.shape[1] > 1:
+        test_df = pd.DataFrame({
+            'sample_id': ids_test,
+            'true_label': y_test.reshape(-1) if len(y_test.shape) == 2 and y_test.shape[1] == 1 else y_test,
+            'probability': np.round(np.array(test_metrics['probabilities']).reshape(-1), 4),
+            'predicted_label': (np.array(test_metrics['probabilities']) >= 0.5).astype(int).reshape(-1),
+            'cyto_seed_score': scores_test
+        })
+
+    else:
+        # --- Multi-label classification ---
         train_dfs = []
-        val_dfs=[]
+        val_dfs = []
         test_dfs = []
         for k in range(y_train.shape[1]):
             train_df_k = pd.DataFrame({
@@ -922,7 +925,7 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
                 'probability': np.round(np.array(train_metrics['probabilities'])[:, k], 4),
                 'predicted_label': (np.array(train_metrics['probabilities'])[:, k] >= 0.5).astype(int),
                 'class': k,
-                'cyto_seed_score': scores_train  # Add cyto_seed_score to multi-class DataFrame
+                'cyto_seed_score': scores_train
             })
             val_df_k = pd.DataFrame({
                 'sample_id': ids_val,
@@ -930,7 +933,7 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
                 'probability': np.round(np.array(val_metrics['probabilities'])[:, k], 4),
                 'predicted_label': (np.array(val_metrics['probabilities'])[:, k] >= 0.5).astype(int),
                 'class': k,
-                'cyto_seed_score': scores_val  # Add cyto_seed_score to multi-class DataFrame
+                'cyto_seed_score': scores_val
             })
             test_df_k = pd.DataFrame({
                 'sample_id': ids_test,
@@ -938,12 +941,12 @@ def run_model_and_evaluate(x_data, x_aux, y_data, var_names, hyperparams,
                 'probability': np.round(np.array(test_metrics['probabilities'])[:, k], 4),
                 'predicted_label': (np.array(test_metrics['probabilities'])[:, k] >= 0.5).astype(int),
                 'class': k,
-                'cyto_seed_score': scores_test  # Add cyto_seed_score to multi-class DataFrame
+                'cyto_seed_score': scores_test
             })
             train_dfs.append(train_df_k)
             val_dfs.append(val_df_k)
             test_dfs.append(test_df_k)
-        
+
         train_df = pd.concat(train_dfs)
         val_df = pd.concat(val_dfs)
         test_df = pd.concat(test_dfs)
