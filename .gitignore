@@ -288,3 +288,8 @@ minimal_test_results/minimal_test_results.pkl
 minimal_test_results/minimal_test_test_predictions.csv.gz
 minimal_test_results/minimal_test_train_predictions.csv.gz
 minimal_test_results/minimal_test_val_predictions.csv.gz
+grid_search.sbatch
+vi_grid_search_9225389.err
+vi_grid_search_9225389.out
+vi_grid_search_9225410.err
+vi_grid_search_9225410.out

@@ -418,6 +418,8 @@ def prepare_and_load_emtab():
     """
     import pickle
     import mygene
+    import numpy as np
+    import scipy.sparse as sp
 
     data_path = "/labs/Aguiar/SSPA_BRAY/dataset/EMTAB11349/preprocessed"
     cache_file = os.path.join(data_path, "emtab_ensembl_converted.pkl")
@@ -488,6 +490,17 @@ def prepare_and_load_emtab():
     # Subset X to mapped genes and rename columns to Ensembl IDs
     X_mapped = X[mapped_genes].copy()
     X_mapped.columns = ensembl_ids
+
+    # Log-transform the data (log1p)
+    print("Applying log1p transformation to gene expression data...")
+    if sp.issparse(X_mapped.values):
+        # If sparse, convert to dense for log1p, then back to sparse if needed
+        X_dense = X_mapped.values.A if hasattr(X_mapped.values, "A") else X_mapped.values.toarray()
+        X_log = np.log1p(X_dense)
+        X_mapped = pd.DataFrame(X_log, index=X_mapped.index, columns=X_mapped.columns)
+    else:
+        X_mapped = np.log1p(X_mapped)
+        X_mapped = pd.DataFrame(X_mapped, index=X.index, columns=X_mapped.columns)
 
     # Create AnnData object
     adata = ad.AnnData(X=X_mapped)
