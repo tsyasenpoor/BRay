@@ -288,10 +288,22 @@ class SupervisedPoissonFactorization:
         
         return {'zeta': zeta_new}
     
-    def fit(self, X, Y, X_aux, n_iter=100, tol=1e-4):
-        """Main fitting loop"""
+    def fit(self, X, Y, X_aux, n_iter=100, tol=1e-4, verbose=False):
+        """Main fitting loop.
+
+        Parameters
+        ----------
+        X, Y, X_aux : jnp.ndarray
+            Input data.
+        n_iter : int, optional
+            Maximum number of iterations.
+        tol : float, optional
+            Convergence tolerance based on the change in expected theta.
+        verbose : bool, optional
+            If True, print ELBO components at each iteration.
+        """
         params = self.initialize_parameters(X, Y, X_aux)
-        
+
         for iteration in range(n_iter):
             old_params = params.copy()
             
@@ -309,10 +321,22 @@ class SupervisedPoissonFactorization:
             params.update(self.update_v(params, expected_vals, Y, X_aux))
             params.update(self.update_gamma(params, expected_vals, Y, X_aux))
             params.update(self.update_theta(params, expected_vals, z, Y, X_aux))
-            
+
+            if verbose:
+                comps = self.compute_elbo(
+                    X, Y, X_aux, params, return_components=True
+                )
+                print(
+                    f"Iter {iteration + 1}: ELBO={comps['elbo']:.3f}, "
+                    f"Poisson={comps['pois_ll']:.3f}, Logistic={comps['logit_ll']:.3f}, "
+                    f"KL_theta={comps['kl_theta']:.3f}, KL_beta={comps['kl_beta']:.3f}, "
+                    f"KL_eta={comps['kl_eta']:.3f}, KL_xi={comps['kl_xi']:.3f}, "
+                    f"KL_v={comps['kl_v']:.3f}, KL_gamma={comps['kl_gamma']:.3f}"
+                )
+
             # Check convergence (simple check on theta means)
             if iteration > 0:
-                theta_diff = jnp.mean(jnp.abs(params['a_theta']/params['b_theta'] - 
+                theta_diff = jnp.mean(jnp.abs(params['a_theta']/params['b_theta'] -
                                              old_params['a_theta']/old_params['b_theta']))
                 if theta_diff < tol:
                     print(f"Converged after {iteration+1} iterations")
@@ -322,8 +346,24 @@ class SupervisedPoissonFactorization:
 
     # ----------------- ELBO (unchanged, but with λ clip) ----------------
     def compute_elbo(self, X, Y, X_aux,
-                    params: Dict[str, jnp.ndarray]) -> float:
-        """Exact mean‑field ELBO (constants dropped)."""
+                    params: Dict[str, jnp.ndarray],
+                    return_components: bool = False):
+        """Exact mean‑field ELBO (constants dropped).
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            Gene expression matrix.
+        Y : jnp.ndarray
+            Binary outcomes.
+        X_aux : jnp.ndarray
+            Auxiliary covariates.
+        params : Dict[str, jnp.ndarray]
+            Current variational parameters.
+        return_components : bool, optional
+            If True, return a dictionary with individual ELBO components
+            instead of just the total ELBO.
+        """
 
         digamma   = jsp.special.digamma
         gammaln   = jsp.special.gammaln
@@ -393,7 +433,22 @@ class SupervisedPoissonFactorization:
 
         kl_total = kl_theta + kl_beta + kl_eta + kl_xi + kl_v + kl_gamma_coef
 
-        return (pois_ll + logit_ll - kl_total).item()
+        elbo = pois_ll + logit_ll - kl_total
+
+        if return_components:
+            return {
+                "pois_ll": float(pois_ll),
+                "logit_ll": float(logit_ll),
+                "kl_theta": float(kl_theta),
+                "kl_beta": float(kl_beta),
+                "kl_eta": float(kl_eta),
+                "kl_xi": float(kl_xi),
+                "kl_v": float(kl_v),
+                "kl_gamma": float(kl_gamma_coef),
+                "elbo": float(elbo),
+            }
+
+        return float(elbo)
 
 
 def _compute_metrics(y_true: np.ndarray, probs: np.ndarray):
