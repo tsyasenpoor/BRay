@@ -1,0 +1,10 @@
+Job started on: xanadu-69
+Job started at: Sun Jul 13 19:31:16 EDT 2025
+SLURM_JOB_ID: 9226862
+SLURM_SUBMIT_DIR: /labs/Aguiar/SSPA_BRAY/BRay
+Starting grid search script...
+Python executable: /home/FCAM/tyasenpoor/miniconda3/envs/bray_cpu/bin/python
+Python version: Python 3.11.12
+Initial memory usage: 155.71 MB
+MEMORY [Before loading data files]: 208.82 MB
+MEMORY [After loading CYTOSEEDS]: 209.52 MB
