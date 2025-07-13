@@ -113,13 +113,17 @@ class SupervisedPoissonFactorization:
         tau2_v = jnp.ones((self.kappa, self.K)) * self.sigma2_v
         
         # Initialize zeta based on expected activations
-        # Use a reasonable guess for the linear predictor magnitude
-        theta_mean = jnp.mean(a_theta / b_theta, axis=1)  # (n,)
-        v_mean = jnp.mean(mu_v, axis=0)  # (K,)
-        gamma_mean = jnp.mean(mu_gamma, axis=0)  # (x_aux_dim,)
-        
-        expected_linear = (jnp.outer(theta_mean, v_mean).sum(axis=1)[:, None] + 
-                          X_aux @ gamma_mean[None, :])  # (n, kappa)
+        # Use a reasonable guess for the linear predictor magnitude.
+        # Compute expected theta values for each factor
+        theta_exp = a_theta / b_theta  # (n, K)
+
+        # Expected linear predictor for each outcome
+        # (n, κ) = (n, K) @ (κ, K)^T + (n, d) @ (κ, d)^T
+        expected_linear = theta_exp @ mu_v.T + X_aux @ mu_gamma.T
+
+        if expected_linear.ndim == 1:
+            expected_linear = expected_linear[:, None]
+
         zeta = jnp.abs(expected_linear) + 0.1  # Small offset for stability
         
         return {
