@@ -24,14 +24,14 @@ def run_subset_vi(n_cells=500, n_genes=500, max_iters=10, seed=0):
     var_names = list(subset.var_names)
 
     hyperparams = {
-        "c_prime": 2.0,
-        "d_prime": 3.0,
-        "c": 0.6,
-        "a_prime": 2.0,
-        "b_prime": 3.0,
-        "a": 0.6,
-        "tau": 1.0,
-        "sigma": 1.0,
+        "alpha_eta": 2.0,
+        "lambda_eta": 3.0,
+        "alpha_beta": 0.6,
+        "alpha_xi": 2.0,
+        "lambda_xi": 3.0,
+        "alpha_theta": 0.6,
+        "sigma2_v": 1.0,
+        "sigma2_gamma": 1.0,
         "d": 3,
     }
 

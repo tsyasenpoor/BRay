@@ -99,14 +99,14 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
             if len(x_aux.shape) == 1:
                 x_aux = x_aux.reshape(-1, 1)
 
-            c_prime = hyperparams['c_prime']
-            d_prime = hyperparams['d_prime']
-            c       = hyperparams['c']
-            a_prime = hyperparams['a_prime']
-            b_prime = hyperparams['b_prime']
-            a       = hyperparams['a']
-            tau     = hyperparams['tau']
-            sigma   = hyperparams['sigma']
+            alpha_eta = hyperparams['alpha_eta']
+            lambda_eta = hyperparams['lambda_eta']
+            alpha_beta = hyperparams['alpha_beta']
+            alpha_xi = hyperparams['alpha_xi']
+            lambda_xi = hyperparams['lambda_xi']
+            alpha_theta = hyperparams['alpha_theta']
+            sigma2_v = hyperparams['sigma2_v']
+            sigma2_gamma = hyperparams['sigma2_gamma']
 
             E_eta_flat = E_eta.flatten()
             E_xi_flat  = E_xi.flatten()
@@ -120,10 +120,10 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
             
             # Prior distributions
             E_log_p_eta = jnp.sum(
-                c_prime * jnp.log(d_prime)
-                - jax.scipy.special.gammaln(c_prime)
-                + (c_prime - 1) * jnp.log(E_eta_flat + 1e-10)
-                - d_prime * E_eta_flat
+                alpha_eta * jnp.log(lambda_eta)
+                - jax.scipy.special.gammaln(alpha_eta)
+                + (alpha_eta - 1) * jnp.log(E_eta_flat + 1e-10)
+                - lambda_eta * E_eta_flat
             )
             
             E_eta_col = E_eta.reshape(-1, 1)
@@ -132,9 +132,9 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
             else:
                 E_eta_broadcast = E_eta_col
             E_log_p_beta = jnp.sum(
-                c * jnp.log(E_eta_broadcast + 1e-10)
-                - jax.scipy.special.gammaln(c)
-                + (c - 1) * jnp.log(E_beta + 1e-10)
+                alpha_beta * jnp.log(E_eta_broadcast + 1e-10)
+                - jax.scipy.special.gammaln(alpha_beta)
+                + (alpha_beta - 1) * jnp.log(E_beta + 1e-10)
                 - E_eta_broadcast * E_beta
             )
             
@@ -144,10 +144,10 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
             )
             
             E_log_p_xi = jnp.sum(
-                a_prime * jnp.log(b_prime)
-                - jax.scipy.special.gammaln(a_prime)
-                + (a_prime - 1) * jnp.log(E_xi_flat + 1e-10)
-                - b_prime * E_xi_flat
+                alpha_xi * jnp.log(lambda_xi)
+                - jax.scipy.special.gammaln(alpha_xi)
+                + (alpha_xi - 1) * jnp.log(E_xi_flat + 1e-10)
+                - lambda_xi * E_xi_flat
             )
             
             E_xi_col = E_xi.reshape(-1, 1)
@@ -156,9 +156,9 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
             else:
                 E_xi_broadcast = E_xi_col
             E_log_p_theta = jnp.sum(
-                a * jnp.log(E_xi_broadcast + 1e-10)
-                - jax.scipy.special.gammaln(a)
-                + (a - 1) * jnp.log(E_theta + 1e-10)
+                alpha_theta * jnp.log(E_xi_broadcast + 1e-10)
+                - jax.scipy.special.gammaln(alpha_theta)
+                + (alpha_theta - 1) * jnp.log(E_theta + 1e-10)
                 - E_xi_broadcast * E_theta
             )
             
@@ -183,9 +183,9 @@ def debug_elbo_calculation(x_data, y_data, x_aux, hyperparams, mask=None, max_it
                 + (1 - y_data) * jnp.log(1 - probs + 1e-10)
             )
             
-            E_log_p_gamma = -0.5 * jnp.sum(E_gamma**2) / sigma**2
+            E_log_p_gamma = -0.5 * jnp.sum(E_gamma**2) / sigma2_gamma**2
             # Laplace prior on upsilon for sparsity
-            E_log_p_upsilon = -jnp.sum(jnp.abs(E_upsilon)) / tau - E_upsilon.size * jnp.log(2 * tau)
+            E_log_p_upsilon = -jnp.sum(jnp.abs(E_upsilon)) / sigma2_v - E_upsilon.size * jnp.log(2 * sigma2_v)
             
             # Variational distributions
             alpha_eta = q_params['alpha_eta']
@@ -463,11 +463,11 @@ def main():
     
     # Set hyperparameters
     hyperparams = {
-        "c_prime": 2.0,  "d_prime": 3.0,
-        "c":      0.6,
-        "a_prime":2.0,   "b_prime": 3.0,
-        "a":      0.6,
-        "tau":    4.0,   "sigma":   4.0,
+        "alpha_eta": 2.0,  "lambda_eta": 3.0,
+        "alpha_beta": 0.6,
+        "alpha_xi": 2.0,   "lambda_xi": 3.0,
+        "alpha_theta": 0.6,
+        "sigma2_v": 4.0,   "sigma2_gamma":   4.0,
         "d":      args.d
     }
     
