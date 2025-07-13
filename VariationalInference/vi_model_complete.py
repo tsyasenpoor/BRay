@@ -4,6 +4,15 @@ from jax import vmap, jit
 from typing import Dict, Tuple
 import jax
 import jax.scipy as jsp
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+)
 
 # Helper functions
 def lambda_jj(zeta):
@@ -381,3 +390,120 @@ class SupervisedPoissonFactorization:
         kl_total = kl_theta + kl_beta + kl_eta + kl_xi + kl_v + kl_gamma_coef
 
         return (pois_ll + logit_ll - kl_total).item()
+
+
+def _compute_metrics(y_true: np.ndarray, probs: np.ndarray):
+    """Compute basic classification metrics."""
+    preds = (probs >= 0.5).astype(int)
+
+    if y_true.ndim == 1 or y_true.shape[1] == 1:
+        y_flat = y_true.reshape(-1)
+        p_flat = probs.reshape(-1)
+        pred_flat = preds.reshape(-1)
+
+        metrics = {
+            "accuracy": accuracy_score(y_flat, pred_flat),
+            "precision": precision_score(y_flat, pred_flat, zero_division=0),
+            "recall": recall_score(y_flat, pred_flat, zero_division=0),
+            "f1": f1_score(y_flat, pred_flat, zero_division=0),
+        }
+        try:
+            metrics["roc_auc"] = roc_auc_score(y_flat, p_flat)
+        except ValueError:
+            metrics["roc_auc"] = 0.5
+    else:
+        per_class = []
+        for k in range(y_true.shape[1]):
+            m = _compute_metrics(y_true[:, k], probs[:, k])
+            per_class.append(m)
+        metrics = {k: float(np.mean([m[k] for m in per_class])) for k in ["accuracy","precision","recall","f1","roc_auc"]}
+        metrics["per_class_metrics"] = per_class
+
+    metrics["probabilities"] = probs.tolist()
+    return metrics
+
+
+def run_model_and_evaluate(
+    x_data,
+    x_aux,
+    y_data,
+    var_names,
+    hyperparams,
+    seed=None,
+    test_size=0.15,
+    val_size=0.15,
+    max_iters=100,
+    return_probs=True,
+    sample_ids=None,
+    mask=None,
+    scores=None,
+    plot_elbo=False,
+    plot_prefix=None,
+    return_params=False,
+):
+    """Fit the model on all data and evaluate on splits."""
+
+    if seed is None:
+        seed = 0
+
+    if y_data.ndim == 1:
+        y_data = y_data.reshape(-1, 1)
+    if x_aux.ndim == 1:
+        x_aux = x_aux.reshape(-1, 1)
+
+    n_samples, n_genes = x_data.shape
+    kappa = y_data.shape[1]
+    d = hyperparams.get("d", 1)
+
+    model = SupervisedPoissonFactorization(
+        n_samples,
+        n_genes,
+        d,
+        kappa,
+        alpha_eta=hyperparams.get("alpha_eta", 1.0),
+        lambda_eta=hyperparams.get("lambda_eta", 1.0),
+        alpha_beta=hyperparams.get("alpha_beta", 1.0),
+        alpha_xi=hyperparams.get("alpha_xi", 1.0),
+        lambda_xi=hyperparams.get("lambda_xi", 1.0),
+        alpha_theta=hyperparams.get("alpha_theta", 1.0),
+        sigma2_gamma=hyperparams.get("sigma2_gamma", 1.0),
+        sigma2_v=hyperparams.get("sigma2_v", 1.0),
+        key=random.PRNGKey(seed),
+    )
+
+    params, expected = model.fit(x_data, y_data, x_aux, n_iter=max_iters)
+
+    all_probs = logistic(
+        expected["E_theta"] @ params["mu_v"].T + x_aux @ params["mu_gamma"].T
+    )
+    indices = np.arange(n_samples)
+    train_idx, temp_idx = train_test_split(
+        indices, test_size=val_size + test_size, random_state=seed
+    )
+    val_rel = test_size / (val_size + test_size)
+    val_idx, test_idx = train_test_split(
+        temp_idx, test_size=val_rel, random_state=seed
+    )
+
+    train_metrics = _compute_metrics(y_data[train_idx], np.array(all_probs)[train_idx])
+    val_metrics = _compute_metrics(y_data[val_idx], np.array(all_probs)[val_idx])
+    test_metrics = _compute_metrics(y_data[test_idx], np.array(all_probs)[test_idx])
+
+    results = {
+        "train_metrics": {k: v for k, v in train_metrics.items() if k != "probabilities"},
+        "val_metrics": {k: v for k, v in val_metrics.items() if k != "probabilities"},
+        "test_metrics": {k: v for k, v in test_metrics.items() if k != "probabilities"},
+        "hyperparameters": hyperparams,
+    }
+
+    if return_probs:
+        results["train_probabilities"] = train_metrics["probabilities"]
+        results["val_probabilities"] = val_metrics["probabilities"]
+        results["test_probabilities"] = test_metrics["probabilities"]
+
+    if return_params:
+        for k, v in params.items():
+            if isinstance(v, jnp.ndarray):
+                results[k] = np.array(v).tolist()
+
+    return results

@@ -9,20 +9,20 @@ def generate_synthetic_data(n_samples, n_genes, n_programs, p_aux=1, seed=0):
     key = random.PRNGKey(seed)
     keys = random.split(key, 10)
     hyperparams = {
-        "c_prime": 2.0,
-        "d_prime": 2.0,
-        "c": 0.8,
-        "a_prime": 2.0,
-        "b_prime": 2.0,
-        "a": 0.8,
-        "tau": 2.0,
-        "sigma": 2.0,
+        "alpha_eta": 2.0,
+        "lambda_eta": 2.0,
+        "alpha_beta": 0.8,
+        "alpha_xi": 2.0,
+        "lambda_xi": 2.0,
+        "alpha_theta": 0.8,
+        "sigma2_v": 2.0,
+        "sigma2_gamma": 2.0,
         "d": n_programs,
     }
-    eta_true = random.gamma(keys[0], hyperparams["c_prime"], shape=(n_genes,)) / hyperparams["d_prime"]
-    beta_true = random.gamma(keys[1], hyperparams["c"], shape=(n_genes, n_programs)) / jnp.expand_dims(eta_true, axis=1)
-    xi_true = random.gamma(keys[2], hyperparams["a_prime"], shape=(n_samples,)) / hyperparams["b_prime"]
-    theta_true = random.gamma(keys[3], hyperparams["a"], shape=(n_samples, n_programs)) / jnp.expand_dims(xi_true, axis=1)
+    eta_true = random.gamma(keys[0], hyperparams["alpha_eta"], shape=(n_genes,)) / hyperparams["lambda_eta"]
+    beta_true = random.gamma(keys[1], hyperparams["alpha_beta"], shape=(n_genes, n_programs)) / jnp.expand_dims(eta_true, axis=1)
+    xi_true = random.gamma(keys[2], hyperparams["alpha_xi"], shape=(n_samples,)) / hyperparams["lambda_xi"]
+    theta_true = random.gamma(keys[3], hyperparams["alpha_theta"], shape=(n_samples, n_programs)) / jnp.expand_dims(xi_true, axis=1)
     gamma_true = jnp.zeros((1, p_aux))
     upsilon_true = jnp.zeros((1, n_programs))
     rate = jnp.dot(theta_true, beta_true.T)

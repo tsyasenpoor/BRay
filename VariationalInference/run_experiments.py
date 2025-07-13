@@ -359,11 +359,11 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         print(f"Found cyto_seed_score in dataset with mean value: {np.mean(scores):.4f}")
 
     hyperparams = {
-        "c_prime": 2.0, "d_prime": 3.0,
-        "c":      0.6,
-        "a_prime": 2.0, "b_prime": 3.0,
-        "a":      0.6,
-        "tau":    1.0, "sigma":   1.0
+        "alpha_eta": 2.0, "lambda_eta": 3.0,
+        "alpha_beta": 0.6,
+        "alpha_xi": 2.0, "lambda_xi": 3.0,
+        "alpha_theta": 0.6,
+        "sigma2_v": 1.0, "sigma2_gamma": 1.0
     }
     
     n_pathways = mask.shape[1]
@@ -490,11 +490,11 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         print(f"Found cyto_seed_score in dataset with mean value: {np.mean(scores):.4f}")
 
     hyperparams = {
-        "c_prime": 2.0, "d_prime": 3.0,
-        "c":      0.6,
-        "a_prime": 2.0, "b_prime": 3.0,
-        "a":      0.6,
-        "tau":    1.0, "sigma":   1.0
+        "alpha_eta": 2.0, "lambda_eta": 3.0,
+        "alpha_beta": 0.6,
+        "alpha_xi": 2.0, "lambda_xi": 3.0,
+        "alpha_theta": 0.6,
+        "sigma2_v": 1.0, "sigma2_gamma": 1.0
     }
     
     n_pathways = mask.shape[1]
@@ -666,11 +666,11 @@ def main():
         
         # Set up hyperparams for EMTAB
         hyperparams_emtab = {
-            "c_prime": 2.0,  "d_prime": 3.0,
-            "c":      0.6,
-            "a_prime":2.0,   "b_prime": 3.0,
-            "a":      0.6,
-            "tau":    1.0,   "sigma":   1.0,
+            "alpha_eta": 2.0,  "lambda_eta": 3.0,
+            "alpha_beta": 0.6,
+            "alpha_xi": 2.0,   "lambda_xi": 3.0,
+            "alpha_theta": 0.6,
+            "sigma2_v": 1.0,   "sigma2_gamma": 1.0,
         }
         if args.mask:
             hyperparams_emtab["d"] = mask_array.shape[1]
@@ -757,11 +757,11 @@ def main():
             clear_memory()
         # Set up hyperparams for cyto/ap
         hyperparams_cyto = {
-            "c_prime": 2.0,  "d_prime": 3.0,
-            "c":      0.6,
-            "a_prime":2.0,   "b_prime": 3.0,
-            "a":      0.6,
-            "tau":    1.0,   "sigma":   1.0,
+            "alpha_eta": 2.0,  "lambda_eta": 3.0,
+            "alpha_beta": 0.6,
+            "alpha_xi": 2.0,   "lambda_xi": 3.0,
+            "alpha_theta": 0.6,
+            "sigma2_v": 1.0,   "sigma2_gamma":   1.0,
         }
         if args.mask:
             hyperparams_cyto["d"] = mask_array.shape[1]
