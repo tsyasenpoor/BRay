@@ -6,6 +6,7 @@ import argparse
 import sys
 from sklearn.metrics import f1_score, brier_score_loss
 from sklearn.calibration import calibration_curve
+from sklearn.model_selection import train_test_split
 
 from data import prepare_and_load_emtab
 from vi_model_complete import run_model_and_evaluate
@@ -35,6 +36,15 @@ def grid_search_emtab(param_grid, seed=0, max_iters=500, output_dir='grid_search
     x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
     var_names = list(adata.var_names)
     sample_ids = adata.obs.index.tolist()
+
+    # Create train/val/test split indices
+    n_samples = X.shape[0]
+    indices = np.arange(n_samples)
+    test_size = 0.15
+    val_size = 0.15
+    train_idx, temp_idx = train_test_split(indices, test_size=val_size + test_size, random_state=seed)
+    val_rel = test_size / (val_size + test_size)
+    val_idx, test_idx = train_test_split(temp_idx, test_size=val_rel, random_state=seed)
 
     grid_keys = list(param_grid.keys())
     all_combos = list(itertools.product(*(param_grid[k] for k in grid_keys)))
@@ -69,10 +79,34 @@ def grid_search_emtab(param_grid, seed=0, max_iters=500, output_dir='grid_search
             return_params=False,
         )
 
-        val_probs = np.array(res["val_probabilities"]).reshape(-1)
-        val_labels = res["val_results_df"]["true_label"].values
-        thr, val_best_f1 = compute_best_threshold(val_probs, val_labels)
-        brier = brier_score_loss(val_labels, val_probs)
+        # Get validation probabilities and reshape to match Y's shape
+        val_probs = np.array(res["val_probabilities"])
+        if Y.shape[1] == 1:
+            val_probs = val_probs.reshape(-1)
+            val_labels = Y[val_idx].reshape(-1)  # Use first column for single label
+        else:
+            val_labels = Y[val_idx]  # Use all columns for multiple labels
+
+        # Compute metrics for each label if multiple labels exist
+        if Y.shape[1] > 1:
+            thresholds = []
+            f1_scores = []
+            brier_scores = []
+            for i in range(Y.shape[1]):
+                thr, val_best_f1 = compute_best_threshold(val_probs[:, i], val_labels[:, i])
+                brier = brier_score_loss(val_labels[:, i], val_probs[:, i])
+                thresholds.append(thr)
+                f1_scores.append(val_best_f1)
+                brier_scores.append(brier)
+            
+            # Average the metrics
+            thr = np.mean(thresholds)
+            val_best_f1 = np.mean(f1_scores)
+            brier = np.mean(brier_scores)
+        else:
+            thr, val_best_f1 = compute_best_threshold(val_probs, val_labels)
+            brier = brier_score_loss(val_labels, val_probs)
+
         results_summary.append({
             "hyperparams": hyperparams,
             "val_f1": res["val_metrics"]["f1"],
@@ -93,7 +127,21 @@ def grid_search_emtab(param_grid, seed=0, max_iters=500, output_dir='grid_search
     best_res = results_summary[best_idx]
     best_probs = np.array(best_res['val_probs'])
     best_labels = np.array(best_res['val_labels'])
-    frac_pos, mean_pred = calibration_curve(best_labels, best_probs, n_bins=10)
+    
+    # Handle multiple labels for calibration curve
+    if len(best_probs.shape) > 1 and best_probs.shape[1] > 1:
+        # Compute calibration curve for each label and average
+        frac_pos_list = []
+        mean_pred_list = []
+        for i in range(best_probs.shape[1]):
+            frac_pos, mean_pred = calibration_curve(best_labels[:, i], best_probs[:, i], n_bins=10)
+            frac_pos_list.append(frac_pos)
+            mean_pred_list.append(mean_pred)
+        frac_pos = np.mean(frac_pos_list, axis=0)
+        mean_pred = np.mean(mean_pred_list, axis=0)
+    else:
+        frac_pos, mean_pred = calibration_curve(best_labels, best_probs, n_bins=10)
+
     calibration_data = {
         "fraction_of_positives": frac_pos.tolist(),
         "mean_predicted_value": mean_pred.tolist(),

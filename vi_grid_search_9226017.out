@@ -38790,3 +38790,222 @@ MEMORY CLEARED: 0.00 MB, now at 2170.25 MB
 --- VI Iteration 100/500 ---
 Updating regression parameters (gamma, upsilon)...
 Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5766e-02 to 5.2953e+05, E_gamma range: -2.1800e+02 to -3.5049e-01, E_upsilon range: -3.3480e+06 to 2.7029e+06
+zeta range: 3.1333e+08 to 1.2439e+12, lambda_zeta range: 2.0098e-13 to 7.9789e-10
+E_A range: -8.4476e+11 to 1.2439e+12, E_A_sq range: 9.8173e+16 to 1.5473e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6670786.0000
+E[log p(beta)]:      140027152.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5721931.0000
+E[log p(x,z)]:         2477326336.0000
+E[log p(gamma)]:      -28750.2031
+E[log p(upsilon|lam)]: -723739968.0000
+E[log p(lambda^2)]:  -1212526080.0000
+E[log p(y)]:          5318341296128.0000
+H[q(eta)]:            52765.0586
+H[q(beta)]:           -183418608.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2784724.5000
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15810.1875
+H[q(lambda^2)]:      1212563200.0000
+----------------------
+Total ELBO:           5317977964544.0000
+Iter 100/500 ELBO = 5317977964544.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.43 MB
+
+--- VI Iteration 101/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5739e-02 to 5.3068e+05, E_gamma range: -2.6767e+02 to -2.0322e+00, E_upsilon range: -3.3047e+06 to 2.6880e+06
+zeta range: 3.2563e+08 to 1.2496e+12, lambda_zeta range: 2.0006e-13 to 7.6775e-10
+E_A range: -8.4464e+11 to 1.2496e+12, E_A_sq range: 1.0603e+17 to 1.5616e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6668629.5000
+E[log p(beta)]:      140141728.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5718301.0000
+E[log p(x,z)]:         2503207168.0000
+E[log p(gamma)]:      -55163.9219
+E[log p(upsilon|lam)]: -650142080.0000
+E[log p(lambda^2)]:  -1196834944.0000
+E[log p(y)]:          5376194379776.0000
+H[q(eta)]:            52759.9688
+H[q(beta)]:           -183500640.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2782432.5000
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15798.3877
+H[q(lambda^2)]:      1196872192.0000
+----------------------
+Total ELBO:           5375962120192.0000
+Iter 101/500 ELBO = 5375962120192.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.26 MB
+
+--- VI Iteration 102/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5713e-02 to 5.3179e+05, E_gamma range: -1.7462e+02 to -1.9878e-01, E_upsilon range: -3.2759e+06 to 2.6537e+06
+zeta range: 3.2212e+08 to 1.2529e+12, lambda_zeta range: 1.9953e-13 to 7.7612e-10
+E_A range: -8.4684e+11 to 1.2529e+12, E_A_sq range: 1.0376e+17 to 1.5698e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6666484.0000
+E[log p(beta)]:      140255872.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5714698.0000
+E[log p(x,z)]:         2528738304.0000
+E[log p(gamma)]:      -18406.6758
+E[log p(upsilon|lam)]: -684632064.0000
+E[log p(lambda^2)]:  -1176236416.0000
+E[log p(y)]:          5429794439168.0000
+H[q(eta)]:            52754.9141
+H[q(beta)]:           -183582368.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2780154.5000
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15775.5723
+H[q(lambda^2)]:      1176273792.0000
+----------------------
+Total ELBO:           5429594685440.0000
+Iter 102/500 ELBO = 5429594685440.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.19 MB
+
+--- VI Iteration 103/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5689e-02 to 5.3287e+05, E_gamma range: -1.9764e+02 to -1.3973e-01, E_upsilon range: -3.2851e+06 to 2.6823e+06
+zeta range: 3.2071e+08 to 1.2591e+12, lambda_zeta range: 1.9856e-13 to 7.7952e-10
+E_A range: -8.4994e+11 to 1.2591e+12, E_A_sq range: 1.0286e+17 to 1.5853e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6664350.5000
+E[log p(beta)]:      140369568.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5711121.0000
+E[log p(x,z)]:         2553909760.0000
+E[log p(gamma)]:      -22754.1504
+E[log p(upsilon|lam)]: -751201152.0000
+E[log p(lambda^2)]:  -1168894976.0000
+E[log p(y)]:          5482798383104.0000
+H[q(eta)]:            52749.8945
+H[q(beta)]:           -183663808.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2777869.2500
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15750.5410
+H[q(lambda^2)]:      1168932096.0000
+----------------------
+Total ELBO:           5482571890688.0000
+Iter 103/500 ELBO = 5482571890688.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.50 MB
+
+--- VI Iteration 104/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5666e-02 to 5.3392e+05, E_gamma range: -1.3133e+02 to -7.3185e-01, E_upsilon range: -3.2658e+06 to 2.6932e+06
+zeta range: 3.1294e+08 to 1.2674e+12, lambda_zeta range: 1.9725e-13 to 7.9888e-10
+E_A range: -8.5185e+11 to 1.2674e+12, E_A_sq range: 9.7930e+16 to 1.6064e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6662229.0000
+E[log p(beta)]:      140482768.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5707566.0000
+E[log p(x,z)]:         2578710272.0000
+E[log p(gamma)]:      -17083.3398
+E[log p(upsilon|lam)]: -651171136.0000
+E[log p(lambda^2)]:  -1161023872.0000
+E[log p(y)]:          5536226476032.0000
+H[q(eta)]:            52744.8750
+H[q(beta)]:           -183744896.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2775626.5000
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15748.2988
+H[q(lambda^2)]:      1161060992.0000
+----------------------
+Total ELBO:           5536141017088.0000
+Iter 104/500 ELBO = 5536141017088.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.50 MB
+
+--- VI Iteration 105/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5644e-02 to 5.3493e+05, E_gamma range: -2.2383e+02 to -1.5884e+00, E_upsilon range: -3.2014e+06 to 2.6841e+06
+zeta range: 3.1001e+08 to 1.2715e+12, lambda_zeta range: 1.9662e-13 to 8.0642e-10
+E_A range: -8.5099e+11 to 1.2715e+12, E_A_sq range: 9.6109e+16 to 1.6166e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6660119.0000
+E[log p(beta)]:      140595440.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5704043.0000
+E[log p(x,z)]:         2603129600.0000
+E[log p(gamma)]:      -26400.5410
+E[log p(upsilon|lam)]: -663503616.0000
+E[log p(lambda^2)]:  -1144471808.0000
+E[log p(y)]:          5586719604736.0000
+H[q(eta)]:            52739.8945
+H[q(beta)]:           -183825664.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2773394.0000
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15724.4922
+H[q(lambda^2)]:      1144508928.0000
+----------------------
+Total ELBO:           5586679234560.0000
+Iter 105/500 ELBO = 5586679234560.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.50 MB
+
+--- VI Iteration 106/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5623e-02 to 5.3590e+05, E_gamma range: -8.4755e+01 to -1.1403e+00, E_upsilon range: -3.1596e+06 to 2.6708e+06
+zeta range: 3.0986e+08 to 1.2769e+12, lambda_zeta range: 1.9579e-13 to 8.0682e-10
+E_A range: -8.5268e+11 to 1.2769e+12, E_A_sq range: 9.6013e+16 to 1.6304e+24
+
+--- ELBO Breakdown ---
+E[log p(eta)]:       -6658023.5000
+E[log p(beta)]:      140707600.0000
+E[log p(xi)]:         1108.3810
+E[log p(theta)]:      -5700545.0000
+E[log p(x,z)]:         2627173120.0000
+E[log p(gamma)]:      -5023.3086
+E[log p(upsilon|lam)]: -647167872.0000
+E[log p(lambda^2)]:  -1131468288.0000
+E[log p(y)]:          5631944163328.0000
+H[q(eta)]:            52734.9336
+H[q(beta)]:           -183906000.0000
+H[q(xi)]:             -3858.2629
+H[q(theta)]:          2771164.5000
+H[q(gamma)]:          5.6754
+H[q(upsilon)]:        15732.2402
+H[q(lambda^2)]:      1131505408.0000
+----------------------
+Total ELBO:           5631970377728.0000
+Iter 106/500 ELBO = 5631970377728.0000
+  New best ELBO found. Patience reset.
+MEMORY CLEARED: 0.00 MB, now at 2170.27 MB
+
+--- VI Iteration 107/500 ---
+Updating regression parameters (gamma, upsilon)...
+Updating latent counts (phi) and alpha parameters...
+Updating rate (omega) and hyperprior (eta, xi) parameters sequentially...
+E_theta range: 1.5603e-02 to 5.3685e+05, E_gamma range: -2.3927e+02 to -3.0683e+00, E_upsilon range: -3.1161e+06 to 2.6387e+06
