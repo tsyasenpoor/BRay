@@ -45,18 +45,20 @@ def fit_svi(model, X, Y, X_aux, n_iter=100, batch_size=64, verbose=False):
         params.update(beta_update)
         expected = model.expected_values(params)
 
-        params.update(model.update_v_full(params, expected, Y_b, X_aux_b))
+        params.update(model.update_v_minibatch(params, expected, Y_b, X_aux_b, batch_idx, scale))
         expected = model.expected_values(params)
 
-        params.update(model.update_gamma_full(params, expected, Y_b, X_aux_b))
+        params.update(model.update_gamma_minibatch(params, expected, Y_b, X_aux_b, batch_idx, scale))
         expected = model.expected_values(params)
 
-        theta_update = model.update_theta(params, expected, z_b * scale, Y_b, X_aux_b)
+        theta_update = model.update_theta_minibatch(params, expected, z_b * scale, Y_b, X_aux_b, batch_idx)
         params["a_theta"] = params["a_theta"].at[batch_idx].set(theta_update["a_theta"])
         params["b_theta"] = params["b_theta"].at[batch_idx].set(theta_update["b_theta"])
         expected = model.expected_values(params)
 
-        params.update(model.update_zeta(params, expected, Y_b, X_aux_b))
+        params["zeta"] = params["zeta"].at[batch_idx].set(
+            model.update_zeta_minibatch(params, expected, Y_b, X_aux_b, batch_idx)["zeta"]
+        )
 
         if verbose and (it % 10 == 0):
             elbo = model.compute_elbo(X_b, Y_b, X_aux_b, params, z_b, return_components=False)
