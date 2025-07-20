@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.random as random
 from jax import vmap, jit
 import jax.scipy as jsp
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple, Union, Optional
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -641,7 +641,8 @@ class SupervisedPoissonFactorization:
                     params: Dict[str, jnp.ndarray],
                     z: jnp.ndarray,
                     return_components: bool = False,
-                    debug_print: bool = False) -> Union[float, Dict[str, float]]:
+                    debug_print: bool = False,
+                    batch_idx: Optional[jnp.ndarray] = None) -> Union[float, Dict[str, float]]:
         """Exact mean‑field ELBO (constants dropped).
 
         Parameters
@@ -666,10 +667,23 @@ class SupervisedPoissonFactorization:
         digamma   = jsp.special.digamma
         gammaln   = jsp.special.gammaln
 
+        if batch_idx is not None:
+            a_theta = params['a_theta'][batch_idx]
+            b_theta = params['b_theta'][batch_idx]
+            a_xi = params['a_xi'][batch_idx]
+            b_xi = params['b_xi'][batch_idx]
+            zeta = params['zeta'][batch_idx]
+        else:
+            a_theta = params['a_theta']
+            b_theta = params['b_theta']
+            a_xi = params['a_xi']
+            b_xi = params['b_xi']
+            zeta = params['zeta']
+
         # ---------- Expectations ----------
-        E_theta     = params['a_theta'] / params['b_theta']          # (n,K)
-        E_theta_sq  = (params['a_theta'] * (params['a_theta'] + 1)) / params['b_theta']**2
-        E_log_theta = digamma(params['a_theta']) - jnp.log(params['b_theta'])
+        E_theta     = a_theta / b_theta          # (n,K)
+        E_theta_sq  = (a_theta * (a_theta + 1)) / b_theta**2
+        E_log_theta = digamma(a_theta) - jnp.log(b_theta)
 
         E_beta      = params['a_beta'] / params['b_beta']           # (p,K)
         E_log_beta  = digamma(params['a_beta'])  - jnp.log(params['b_beta'])
@@ -775,9 +789,9 @@ class SupervisedPoissonFactorization:
             
             return kl_div
 
-        E_log_theta = digamma(params['a_theta']) - jnp.log(params['b_theta'])
-        E_theta = params['a_theta'] / params['b_theta']
-        E_xi = params['a_xi'] / params['b_xi']
+        E_log_theta = digamma(a_theta) - jnp.log(b_theta)
+        E_theta = a_theta / b_theta
+        E_xi = a_xi / b_xi
         
         # Need these for KL computation
         E_log_beta = digamma(params['a_beta']) - jnp.log(params['b_beta'])
@@ -787,10 +801,10 @@ class SupervisedPoissonFactorization:
         # FIXED: Use proper KL computation for theta (with hyperprior xi)
         # For each sample i, theta_i ~ Gamma(alpha_theta, xi_i)
         # So prior parameters are (alpha_theta, E[xi_i]) for each i
-        E_xi_broadcast = jnp.broadcast_to(E_xi[:, None], params['a_theta'].shape)  # (n, K)
+        E_xi_broadcast = jnp.broadcast_to(E_xi[:, None], a_theta.shape)  # (n, K)
         kl_theta = jnp.sum(kl_gamma(
-            jnp.clip(params['a_theta'], 1e-8, 1e6),  # q params (n, K)
-            jnp.clip(params['b_theta'], 1e-8, 1e6),  # q params (n, K)
+            jnp.clip(a_theta, 1e-8, 1e6),  # q params (n, K)
+            jnp.clip(b_theta, 1e-8, 1e6),  # q params (n, K)
             self.alpha_theta,                        # prior shape (scalar)
             jnp.clip(E_xi_broadcast, 1e-8, 1e6)    # prior rate (n, K)
         ))
@@ -814,8 +828,8 @@ class SupervisedPoissonFactorization:
         ).sum()
 
         kl_xi = kl_gamma(
-            jnp.clip(params['a_xi'], 1e-8, 1e6), 
-            jnp.clip(params['b_xi'], 1e-8, 1e6), 
+            jnp.clip(a_xi, 1e-8, 1e6),
+            jnp.clip(b_xi, 1e-8, 1e6),
             self.alpha_xi, self.lambda_xi
         ).sum()
 

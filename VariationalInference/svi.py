@@ -61,7 +61,15 @@ def fit_svi(model, X, Y, X_aux, n_iter=100, batch_size=64, verbose=False):
         )
 
         if verbose and (it % 10 == 0):
-            elbo = model.compute_elbo(X_b, Y_b, X_aux_b, params, z_b, return_components=False)
+            elbo = model.compute_elbo(
+                X_b,
+                Y_b,
+                X_aux_b,
+                params,
+                z_b,
+                return_components=False,
+                batch_idx=batch_idx,
+            )
             print(f"SVI iter {it+1}, minibatch ELBO {float(elbo):.3f}")
 
     return params, model.expected_values(params)
