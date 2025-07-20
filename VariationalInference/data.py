@@ -7,6 +7,9 @@ import pandas as pd
 import os
 from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear_memory
 
+# Force JAX to use CPU only - must be set before importing jax
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+
 # Log initial memory
 print(f"Initial memory usage: {get_memory_usage():.2f} MB")
 

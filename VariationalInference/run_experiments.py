@@ -6,8 +6,13 @@ import anndata as ad
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
+
+# Force JAX to use CPU only - must be set before importing jax
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'
 import jax
+jax.config.update('jax_platform_name', 'cpu')
 import jax.numpy as jnp
+
 import gseapy
 from gseapy import read_gmt
 import mygene  
@@ -55,6 +60,56 @@ def custom_train_test_split(*arrays, test_size=0.15, val_szie=0.15, random_state
         final_result.append(test_parts[i])
     
     return final_result
+
+def save_split_results(results, y_data, sample_ids, split_indices, split_name, output_dir, prefix):
+    # y_data: (n_samples, n_labels)
+    # sample_ids: list of sample ids
+    # split_indices: indices for this split
+    # split_name: 'train', 'val', 'test'
+    # results: dict from run_model_and_evaluate
+    # prefix: file prefix for output
+    
+    probs = np.array(results[f"{split_name}_probabilities"])
+    y_true = y_data[split_indices]
+    sample_id_list = [sample_ids[i] for i in split_indices]
+    preds = (probs >= 0.5).astype(int)
+    n_labels = y_true.shape[1]
+    data = []
+    for i, idx in enumerate(split_indices):
+        row = {
+            "sample_id": sample_id_list[i],
+        }
+        # True labels, predicted probs, predicted labels
+        for k in range(n_labels):
+            row[f"true_label_{k+1}"] = y_true[i, k]
+            row[f"pred_prob_{k+1}"] = probs[i, k]
+            row[f"pred_label_{k+1}"] = preds[i, k]
+        data.append(row)
+    df = pd.DataFrame(data)
+    out_path = os.path.join(output_dir, f"{prefix}_{split_name}_results.csv.gz")
+    df.to_csv(out_path, index=False, compression='gzip')
+
+
+def save_beta_matrix_csv(E_beta, gene_names, row_names, mu_v, out_path):
+    """
+    Save the E_beta matrix as a CSV (gzip) with pathways/programs as rows and genes as columns.
+    Add v columns (one per label) for each program/pathway.
+    """
+    n_programs = E_beta.shape[1]
+    n_labels = mu_v.shape[0] if mu_v is not None else 1
+    data = []
+    for k in range(n_programs):
+        row = {"name": row_names[k]}
+        # Add v columns per label
+        if mu_v is not None:
+            for l in range(n_labels):
+                row[f"v_{l+1}"] = mu_v[l, k]
+        # Add gene contributions
+        for g, gene in enumerate(gene_names):
+            row[gene] = E_beta[g, k]
+        data.append(row)
+    df = pd.DataFrame(data)
+    df.to_csv(out_path, index=False, compression="gzip")
 
 def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None):
     os.makedirs(output_dir, exist_ok=True)
@@ -110,6 +165,9 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
             val_split_size = 0.15
             
             try:
+                print(f"DEBUG: About to call run_model_and_evaluate with X.shape={X.shape}, Y.shape={Y.shape}")
+                print(f"DEBUG: x_aux.shape={x_aux.shape}, hyperparams['d']={hyperparams['d']}")
+                print(f"DEBUG: max_iter={max_iter}")
                 results = run_model_and_evaluate(
                     x_data=X,
                     x_aux=x_aux,
@@ -124,27 +182,30 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                     sample_ids=sample_ids,
                     mask=mask,
                     scores=scores,
-                    return_params=True
+                    return_params=True,
+                    verbose=True,  # Enable verbose output to see debug statements
+                    plot_elbo=True,
+                    plot_prefix=os.path.join(output_dir, "elbo_trace")
                 )
+                print(f"DEBUG: run_model_and_evaluate completed successfully")
 
                 if "error" in results:
                     print(f"Skipping post-processing for d={d} due to training error.")
                     all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
                     continue 
             
-                if "train_results_df" in results:
-                    train_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_train_results.csv.gz")
-                    val_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_val_results.csv.gz")
-                    test_csv_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_test_results.csv.gz")
-                    results["train_results_df"].to_csv(train_csv_path, index=False, compression='gzip')
-                    if "val_results_df" in results:
-                        results["val_results_df"].to_csv(val_csv_path, index=False, compression='gzip')
-                    results["test_results_df"].to_csv(test_csv_path, index=False, compression='gzip')
-                    
-                    train_df = results.pop("train_results_df")
-                    val_df = results.pop("val_results_df", None)
-                    test_df = results.pop("test_results_df")
-                    
+                # Reconstruct split indices
+                n_samples = X.shape[0]
+                indices = np.arange(n_samples)
+                train_idx, temp_idx = train_test_split(indices, test_size=val_split_size + test_split_size, random_state=seed if seed is not None else 0)
+                val_rel = test_split_size / (val_split_size + test_split_size)
+                val_idx, test_idx = train_test_split(temp_idx, test_size=val_rel, random_state=seed if seed is not None else 0)
+
+                # Save split results
+                save_split_results(results, Y, sample_ids, train_idx, "train", output_dir, f"{dataset_name}_{label_col}_d_{d}")
+                save_split_results(results, Y, sample_ids, val_idx, "val", output_dir, f"{dataset_name}_{label_col}_d_{d}")
+                save_split_results(results, Y, sample_ids, test_idx, "test", output_dir, f"{dataset_name}_{label_col}_d_{d}")
+
                 main_results = results.copy()
                 if "alpha_beta" in main_results:
                     del main_results["alpha_beta"]
@@ -157,26 +218,21 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                 with gzip.open(results_json_path, "wt", encoding="utf-8") as f:
                     json.dump(main_results, f, indent=2)
                     
-                if mask is not None:
-                    pathway_results = create_pathway_results(results, var_names, mask, pathway_names)
-                    pathway_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_pathway_results.json.gz")
-                    with gzip.open(pathway_json_path, "wt", encoding="utf-8") as f:
-                        json.dump(pathway_results, f, indent=2)
-                    print(f"Saved pathway-specific results to {pathway_json_path}")
-                else:
-                    gene_program_results = create_gene_program_results(results, var_names)
-                    gp_json_path = os.path.join(output_dir, f"{dataset_name}_{label_col}_d_{d}_gene_program_results.json.gz")
-                    with gzip.open(gp_json_path, "wt", encoding="utf-8") as f:
-                        json.dump(gene_program_results, f, indent=2)
-                    print(f"Saved complete gene program results to {gp_json_path}")
-
-                if "train_results_df" not in results and locals().get('train_df') is not None:
-                    results["train_results_df"] = train_df
-                    if locals().get('val_df') is not None:
-                        results["val_results_df"] = val_df
-                    results["test_results_df"] = test_df
-
                 all_results[f"{dataset_name}_{label_col}_d_{d}"] = results
+
+                # Save E_beta matrix as CSV.gz with v columns
+                a_beta = np.array(results["a_beta"])
+                b_beta = np.array(results["b_beta"])
+                E_beta = a_beta / np.maximum(b_beta, 1e-10)
+                mu_v = np.array(results["mu_v"]) if "mu_v" in results else None
+                if mask is not None:
+                    row_names = pathway_names if pathway_names is not None else [f"pathway_{i+1}" for i in range(E_beta.shape[1])]
+                    out_path = os.path.join(output_dir, f"pathway_contributions.csv.gz")
+                else:
+                    row_names = [f"DRGP{i+1}" for i in range(E_beta.shape[1])]
+                    out_path = os.path.join(output_dir, f"gene_programs.csv.gz")
+                save_beta_matrix_csv(E_beta, var_names, row_names, mu_v, out_path)
+
             except Exception as e:
                 print(f"--- UNHANDLED EXCEPTION for d={d} ---")
                 print(f"Error: {e}")
@@ -186,145 +242,6 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
             clear_memory()
 
     return all_results
-
-def create_pathway_results(results, var_names, mask, pathway_names):
-    """
-    Create a comprehensive dictionary of pathways with their upsilon coefficients
-    and all genes in the pathway with their theta weights.
-    """
-    print("Creating pathway-specific results with upsilon coefficients and gene weights")
-    
-    # Extract upsilon values (pathway importance for outcome)
-    upsilon_values = np.array(results["E_upsilon"])[0]  # Use only first class for simplicity
-    
-    # Calculate E_beta (gene activity values) from the model parameters
-    if "alpha_beta" in results and "omega_beta" in results:
-        # Use the model parameters to calculate gene weights
-        alpha_beta = np.array(results["alpha_beta"])
-        omega_beta = np.array(results["omega_beta"])
-        E_beta = alpha_beta / np.maximum(omega_beta, 1e-10)
-    else:
-        print("Warning: alpha_beta or omega_beta not available in results; trying E_beta directly")
-        if "E_beta" in results:
-            E_beta = np.array(results["E_beta"])
-        else:
-            print("Error: Cannot find gene activity values (E_beta). Proceeding without gene activity metrics.")
-            E_beta = None
-    
-    # Create dictionary for results
-    pathway_results = {}
-    
-    # For each pathway, get all genes that are part of it and their weights
-    for i, pathway_name in enumerate(pathway_names):
-        # Skip if this column in the mask has no genes
-        if np.sum(mask[:, i]) == 0:
-            continue
-            
-        # Get all genes in this pathway with their weights
-        pathway_genes = []
-        gene_indices = np.where(mask[:, i] > 0)[0]
-        
-        # Get the upsilon value (importance of this pathway for the outcome)
-        upsilon_value = float(upsilon_values[i])
-        
-        # For each gene in the pathway, get its gene name and add to results
-        for gene_idx in gene_indices:
-            gene_name = var_names[gene_idx]
-            gene_info = {
-                "gene": gene_name,
-                "index": int(gene_idx)
-            }
-            
-            # Add gene activity/contribution metrics if E_beta is available
-            if E_beta is not None:
-                # Get the activity value for this gene in this pathway
-                activity = float(E_beta[gene_idx, i])
-                gene_info["activity"] = activity
-            
-            pathway_genes.append(gene_info)
-        
-        # Sort genes by activity if activity values are available
-        if E_beta is not None:
-            pathway_genes.sort(key=lambda x: x.get("activity", 0), reverse=True)
-            
-            # Add rank information based on sorted activity
-            for rank, gene_info in enumerate(pathway_genes):
-                gene_info["rank"] = rank + 1
-        
-        # Add to results dictionary
-        pathway_results[pathway_name] = {
-            "upsilon": upsilon_value,
-            "gene_count": len(gene_indices),
-            "genes": pathway_genes
-        }
-    
-    return {
-        "num_pathways": len(pathway_results),
-        "pathways": pathway_results
-    }
-
-def create_gene_program_results(results, var_names):
-    """
-    Create a comprehensive dictionary of gene programs with all genes and their weights.
-    """
-    print("Creating complete gene program results with all genes and weights")
-    
-    # Calculate E_beta from the model parameters
-    if "alpha_beta" in results and "omega_beta" in results:
-        # Use the model parameters to calculate gene weights
-        alpha_beta = np.array(results["alpha_beta"])
-        omega_beta = np.array(results["omega_beta"])
-        E_beta = alpha_beta / np.maximum(omega_beta, 1e-10)
-    else:
-        print("Warning: alpha_beta or omega_beta not available in results; trying E_beta directly")
-        if "E_beta" in results:
-            E_beta = np.array(results["E_beta"])
-        else:
-            print("Error: Cannot find gene program weights (E_beta). Using top_genes as fallback.")
-            return {"gene_programs": results.get("top_genes", {})}
-    
-    # Extract upsilon values (program importance for outcome)
-    upsilon_values = np.array(results["E_upsilon"])[0]  # Use only first class for simplicity
-    
-    # Create dictionary for results
-    gene_program_results = {}
-    
-    # For each gene program
-    for program_idx in range(E_beta.shape[1]):
-        program_name = f"program_{program_idx+1}"
-        
-        # Get upsilon value for this program
-        upsilon_value = float(upsilon_values[program_idx])
-        
-        # Get all genes with their weights for this program
-        genes_with_weights = []
-        for gene_idx, gene_weight in enumerate(E_beta[:, program_idx]):
-            # Only include genes with non-zero weight
-            if gene_weight > 1e-10:
-                genes_with_weights.append({
-                    "gene": var_names[gene_idx],
-                    "weight": float(gene_weight),
-                    "rank": len(genes_with_weights) + 1
-                })
-        
-        # Sort by weight
-        genes_with_weights.sort(key=lambda x: x["weight"], reverse=True)
-        
-        # Update ranks after sorting
-        for i, gene_info in enumerate(genes_with_weights):
-            gene_info["rank"] = i + 1
-        
-        # Add to results dictionary
-        gene_program_results[program_name] = {
-            "upsilon": upsilon_value,
-            "gene_count": len(genes_with_weights),
-            "genes": genes_with_weights
-        }
-    
-    return {
-        "num_programs": len(gene_program_results),
-        "gene_programs": gene_program_results
-    }
 
 def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500, 
                                   output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/combined",
@@ -406,22 +323,21 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
             scores=scores,
             return_params=True,
             plot_elbo=True,
-            plot_prefix=plot_prefix
+            plot_prefix=os.path.join(exp_output_dir, "elbo_trace")
         )
         
-        if "train_results_df" in results:
-            train_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_train_results.csv.gz"
-            val_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_val_results.csv.gz"
-            test_csv_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_test_results.csv.gz"
-            results["train_results_df"].to_csv(os.path.join(exp_output_dir, train_csv_filename), index=False, compression='gzip')
-            if "val_results_df" in results:
-                results["val_results_df"].to_csv(os.path.join(exp_output_dir, val_csv_filename), index=False, compression='gzip')
-            results["test_results_df"].to_csv(os.path.join(exp_output_dir, test_csv_filename), index=False, compression='gzip')
-            
-            train_df = results.pop("train_results_df")
-            val_df = results.pop("val_results_df", None)
-            test_df = results.pop("test_results_df")
-        
+        # Reconstruct split indices
+        n_samples = X.shape[0]
+        indices = np.arange(n_samples)
+        train_idx, temp_idx = train_test_split(indices, test_size=0.15 + 0.15, random_state=seed if seed is not None else 0)
+        val_rel = 0.15 / (0.15 + 0.15)
+        val_idx, test_idx = train_test_split(temp_idx, test_size=val_rel, random_state=seed if seed is not None else 0)
+
+        # Save split results
+        save_split_results(results, Y, sample_ids, train_idx, "train", exp_output_dir, f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}")
+        save_split_results(results, Y, sample_ids, val_idx, "val", exp_output_dir, f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}")
+        save_split_results(results, Y, sample_ids, test_idx, "test", exp_output_dir, f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}")
+
         main_results = results.copy()
         for large_field in ["alpha_beta", "omega_beta", "E_beta"]:
             if large_field in main_results:
@@ -432,16 +348,15 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         with gzip.open(out_path, "wt", encoding="utf-8") as f:
             json.dump(main_results, f, indent=2)
         
-        extended_pathway_names = pathway_names.copy() if pathway_names else [f"pathway_{i+1}" for i in range(n_pathways)]
-        extended_pathway_names.extend([f"gene_program_{i+1}" for i in range(n_gp)])
-        
-        combined_analysis_results = create_pathway_results(results, var_names, extended_mask, extended_pathway_names)
-        combined_analysis_filename = f"{dataset_name}_{label_col}_combined_pw{n_pathways}_gp{n_gp}_analysis.json.gz" # Renamed for clarity
-        combined_analysis_path = os.path.join(exp_output_dir, combined_analysis_filename)
-        with gzip.open(combined_analysis_path, "wt", encoding="utf-8") as f:
-            json.dump(combined_analysis_results, f, indent=2)
-        
-        print(f"Saved combined model results to {exp_output_dir}")
+        # Save E_beta matrix as CSV.gz with v columns
+        a_beta = np.array(results["a_beta"])
+        b_beta = np.array(results["b_beta"])
+        E_beta = a_beta / np.maximum(b_beta, 1e-10)
+        combined_row_names = pathway_names.copy() if pathway_names else [f"pathway_{i+1}" for i in range(n_pathways)]
+        combined_row_names.extend([f"DRGP{i+1}" for i in range(n_gp)])
+        out_path = os.path.join(exp_output_dir, "pathway_DRGP.csv.gz")
+        mu_v = np.array(results["mu_v"]) if "mu_v" in results else None
+        save_beta_matrix_csv(E_beta, var_names, combined_row_names, mu_v, out_path)
 
     except Exception as e:
         print(f"--- UNHANDLED EXCEPTION in combined experiment ---")
@@ -490,10 +405,10 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         print(f"Found cyto_seed_score in dataset with mean value: {np.mean(scores):.4f}")
 
     hyperparams = {
-        "alpha_eta": 2.0, "lambda_eta": 3.0,
-        "alpha_beta": 0.6,
-        "alpha_xi": 2.0, "lambda_xi": 3.0,
-        "alpha_theta": 0.6,
+        "alpha_eta": 0.1, "lambda_eta": 3.0,
+        "alpha_beta": 0.01,
+        "alpha_xi": 0.1, "lambda_xi": 3.0,
+        "alpha_theta": 0.01,
         "sigma2_v": 1.0, "sigma2_gamma": 1.0
     }
     
@@ -536,23 +451,22 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         scores=scores,
         return_params=True,
         plot_elbo=True,
-        plot_prefix=plot_prefix,
+        plot_prefix=os.path.join(exp_output_dir, "elbo_trace"),
         beta_init=beta_init
     )
     
-    if "train_results_df" in results:
-        train_csv_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_train_results.csv.gz"
-        val_csv_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_val_results.csv.gz"
-        test_csv_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_test_results.csv.gz"
-        results["train_results_df"].to_csv(os.path.join(exp_output_dir, train_csv_filename), index=False, compression='gzip')
-        if "val_results_df" in results:
-            results["val_results_df"].to_csv(os.path.join(exp_output_dir, val_csv_filename), index=False, compression='gzip')
-        results["test_results_df"].to_csv(os.path.join(exp_output_dir, test_csv_filename), index=False, compression='gzip')
-        
-        train_df = results.pop("train_results_df")
-        val_df = results.pop("val_results_df", None)
-        test_df = results.pop("test_results_df")
-    
+    # Reconstruct split indices
+    n_samples = X.shape[0]
+    indices = np.arange(n_samples)
+    train_idx, temp_idx = train_test_split(indices, test_size=0.15 + 0.15, random_state=seed if seed is not None else 0)
+    val_rel = 0.15 / (0.15 + 0.15)
+    val_idx, test_idx = train_test_split(temp_idx, test_size=val_rel, random_state=seed if seed is not None else 0)
+
+    # Save split results
+    save_split_results(results, Y, sample_ids, train_idx, "train", exp_output_dir, f"{dataset_name}_{label_col}_initialized_pw{n_pathways}")
+    save_split_results(results, Y, sample_ids, val_idx, "val", exp_output_dir, f"{dataset_name}_{label_col}_initialized_pw{n_pathways}")
+    save_split_results(results, Y, sample_ids, test_idx, "test", exp_output_dir, f"{dataset_name}_{label_col}_initialized_pw{n_pathways}")
+
     main_results = results.copy()
     for large_field in ["alpha_beta", "omega_beta", "E_beta"]:
         if large_field in main_results:
@@ -563,13 +477,15 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     with gzip.open(out_path, "wt", encoding="utf-8") as f:
         json.dump(main_results, f, indent=2)
     
-    gene_program_results = create_gene_program_results(results, var_names)
-    gp_json_filename = f"{dataset_name}_{label_col}_initialized_pw{n_pathways}_gene_program_results.json.gz"
-    gp_path = os.path.join(exp_output_dir, gp_json_filename)
-    with gzip.open(gp_path, "wt", encoding="utf-8") as f:
-        json.dump(gene_program_results, f, indent=2)
-    
-    print(f"Saved initialized model results to {exp_output_dir}")
+    # Save E_beta matrix as CSV.gz with v columns
+    a_beta = np.array(results["a_beta"])
+    b_beta = np.array(results["b_beta"])
+    E_beta = a_beta / np.maximum(b_beta, 1e-10)
+    row_names = [f"DRGP{i+1}" for i in range(E_beta.shape[1])]
+    out_path = os.path.join(exp_output_dir, "gene_programs.csv.gz")
+    mu_v = np.array(results["mu_v"]) if "mu_v" in results else None
+    save_beta_matrix_csv(E_beta, var_names, row_names, mu_v, out_path)
+
     return results
 
 def main():
@@ -666,11 +582,11 @@ def main():
         
         # Set up hyperparams for EMTAB
         hyperparams_emtab = {
-            "alpha_eta": 2.0,  "lambda_eta": 3.0,
-            "alpha_beta": 0.6,
-            "alpha_xi": 2.0,   "lambda_xi": 3.0,
-            "alpha_theta": 0.6,
-            "sigma2_v": 1.0,   "sigma2_gamma": 1.0,
+            "alpha_eta": 0.1, "lambda_eta": 3.0,
+            "alpha_beta": 0.01,
+            "alpha_xi": 0.1, "lambda_xi": 3.0,
+            "alpha_theta": 0.01,
+            "sigma2_v": 1.0, "sigma2_gamma": 1.0
         }
         if args.mask:
             hyperparams_emtab["d"] = mask_array.shape[1]
