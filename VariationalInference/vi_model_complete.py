@@ -842,9 +842,13 @@ class SupervisedPoissonFactorization:
 
         # Fixed KL divergences
         # KL for v uses only diagonal elements of Σ_v to match mu_v shape
+        # If any entries of tau2_v_diag are non‑positive, log() will produce
+        # NaNs which propagate to the ELBO.  Apply a small lower bound for
+        # numerical stability before computing the KL term.
+        tau2_v_safe = jnp.clip(tau2_v_diag, 1e-8, 1e8)
         kl_v = 0.5 * jnp.sum(
-            (params['mu_v']**2 + tau2_v_diag) / self.sigma2_v -
-            jnp.log(tau2_v_diag) + jnp.log(self.sigma2_v) - 1
+            (params['mu_v'] ** 2 + tau2_v_safe) / self.sigma2_v
+            - jnp.log(tau2_v_safe) + jnp.log(self.sigma2_v) - 1
         )
 
         if params['tau2_gamma'].ndim == 3:  # Full covariance (kappa, d, d)
