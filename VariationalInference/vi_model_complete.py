@@ -726,14 +726,21 @@ class SupervisedPoissonFactorization:
 
         # full variance of ψ: Var[θ v_k] + Var[x_aux γ_k]
         var_theta_v = jnp.einsum('ik,ck->ic', E_theta_sq, tau2_v_diag)
+
+        # tau2_gamma may be full covariance (kappa, d, d); use diagonals only
+        if params['tau2_gamma'].ndim == 3:
+            tau2_gamma_diag = jnp.diagonal(params['tau2_gamma'], axis1=1, axis2=2)
+        else:
+            tau2_gamma_diag = params['tau2_gamma']
+
         # Use matrix multiplication for variance of x_aux gamma
-        var_x_aux_gamma = (X_aux**2) @ params['tau2_gamma'].T
+        var_x_aux_gamma = (X_aux**2) @ tau2_gamma_diag.T
         var_psi = var_theta_v + var_x_aux_gamma
 
         logit_term1 = jnp.sum((Y - 0.5) * psi)
         # Add bounds to prevent explosion
         tau2_v_bounded = jnp.clip(tau2_v_diag, 1e-8, 100.0)
-        tau2_gamma_bounded = jnp.clip(params['tau2_gamma'], 1e-8, 100.0)
+        tau2_gamma_bounded = jnp.clip(tau2_gamma_diag, 1e-8, 100.0)
         E_theta_sq_bounded = jnp.clip(E_theta_sq, 1e-8, 1000.0)
 
         var_psi = jnp.einsum('ik,ck->ic', E_theta_sq_bounded, tau2_v_bounded) + \
