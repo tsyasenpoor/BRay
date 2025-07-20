@@ -832,10 +832,13 @@ class SupervisedPoissonFactorization:
         """
         Infer E_theta for new samples given trained global parameters.
         Only theta (and optionally xi) are updated; all other parameters are fixed.
+        NOW INCLUDES LOGISTIC TERMS AND ZETA UPDATES.
         """
         import jax.numpy as jnp
         n_new = X_new.shape[0]
         K = self.K
+        kappa = self.kappa
+        
         # Initialize theta for new samples
         sample_totals = jnp.sum(X_new, axis=1)
         theta_init = jnp.outer(sample_totals / jnp.mean(sample_totals), jnp.ones(K))
@@ -843,37 +846,87 @@ class SupervisedPoissonFactorization:
         theta_var = theta_init * 0.5
         a_theta = (theta_init**2) / theta_var
         b_theta = theta_init / theta_var
+        
         # xi for new samples
         a_xi = jnp.full(n_new, self.alpha_xi + K * self.alpha_theta)
         b_xi = self.lambda_xi + jnp.sum(a_theta / b_theta, axis=1)
+        
         # Use global parameters for beta, eta, v, gamma, etc.
         a_beta = jnp.array(global_params['a_beta'])
         b_beta = jnp.array(global_params['b_beta'])
         mu_v = jnp.array(global_params['mu_v'])
         mu_gamma = jnp.array(global_params['mu_gamma'])
-        # For now, ignore zeta and logistic terms (can be added for more accuracy)
+        
+        # Initialize zeta for new samples
+        E_theta = a_theta / b_theta
+        A_init = jnp.sum(jnp.expand_dims(E_theta, 1) * jnp.expand_dims(mu_v, 0), axis=2) + \
+                x_aux_new @ mu_gamma.T
+        zeta = jnp.abs(A_init) + 0.01
+        
         for it in range(n_iter):
             # E_beta, E_v, E_gamma
             E_beta = a_beta / b_beta
             E_theta = a_theta / b_theta
+            
             # Update z for new samples
             rates = jnp.expand_dims(E_theta, 1) * jnp.expand_dims(E_beta, 0)
             total_rates = jnp.sum(rates, axis=2, keepdims=True)
             probs = rates / (total_rates + 1e-8)
             z = jnp.expand_dims(X_new, 2) * probs
+            
             # Update xi for new samples
             a_xi_new = self.alpha_xi + K * self.alpha_theta
             b_xi_new = self.lambda_xi + jnp.sum(E_theta, axis=1)
             b_xi_new = jnp.maximum(b_xi_new, 1e-8)
             a_xi = jnp.full(n_new, a_xi_new)
             b_xi = b_xi_new
-            # Update theta for new samples (Poisson only)
+            
+            # Update theta for new samples (Poisson + Logistic terms)
             a_theta_new = self.alpha_theta + jnp.sum(z, axis=1)
+            
+            # Poisson terms
             b_theta_poisson = jnp.expand_dims(b_xi, 1) + jnp.sum(E_beta, axis=0)
-            b_theta_new = b_theta_poisson
+            
+            # Logistic regression terms from Jaakola-Jordan bound
+            # Get current theta values for the linearization term
+            theta_current = E_theta
+            
+            # Compute lambda values from zeta
+            lam = lambda_jj(zeta)
+            
+            # Initialize logistic terms
+            b_theta_logistic = jnp.zeros_like(b_theta_poisson)
+            
+            # Loop over outcomes k to compute logistic terms
+            for k in range(kappa):
+                # Term 1: -(y_ik - 1/2) E[v_kl] 
+                # Note: We don't have Y for new samples, so we skip this term
+                # This is a limitation - we could potentially use the expected value
+                
+                # Term 2: -2 lambda(zeta_ik) E[v_kl] x_i^aux E[gamma_k]^T
+                term2 = -2.0 * jnp.expand_dims(lam[:, k], 1) * mu_v[k, :] * \
+                        jnp.expand_dims(x_aux_new @ mu_gamma[k, :].T, 1)
+                
+                # Term 3: -2 lambda(zeta_ik) E[v_kl]^2 theta_il^current
+                term3 = -2.0 * jnp.expand_dims(lam[:, k], 1) * \
+                        jnp.expand_dims(mu_v[k, :]**2, 0) * theta_current
+                
+                # Sum all terms for this outcome
+                b_theta_logistic += term2 + term3
+            
+            # Combine Poisson and logistic terms
+            b_theta_new = b_theta_poisson + b_theta_logistic
             b_theta_new = jnp.maximum(b_theta_new, 1e-8)
+            
             a_theta = a_theta_new
             b_theta = b_theta_new
+            
+            # Update zeta for new samples
+            E_theta = a_theta / b_theta
+            A = jnp.sum(jnp.expand_dims(E_theta, 1) * jnp.expand_dims(mu_v, 0), axis=2) + \
+                x_aux_new @ mu_gamma.T
+            zeta = jnp.abs(A) + 0.01
+            
         return a_theta / b_theta  # E_theta for new samples
 
 

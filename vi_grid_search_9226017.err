@@ -1,3 +1,0 @@
-WARNING:2025-07-12 12:06:28,792:jax._src.xla_bridge:967: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
-WARNING:jax._src.xla_bridge:An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
-slurmstepd: error: *** JOB 9226017 ON xanadu-02 CANCELLED AT 2025-07-13T19:56:48 ***
