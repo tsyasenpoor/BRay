@@ -28,7 +28,8 @@ from memory_tracking import get_memory_usage, log_memory, log_array_sizes, clear
 # Log initial memory
 print(f"Initial memory usage: {get_memory_usage():.2f} MB")
 
-from vi_model_complete import run_model_and_evaluate
+from vi_model_complete import run_model_and_evaluate as run_vi
+from svi import run_model_and_evaluate as run_svi
 from data import *
 
 
@@ -111,7 +112,7 @@ def save_beta_matrix_csv(E_beta, gene_names, row_names, mu_v, out_path):
     df = pd.DataFrame(data)
     df.to_csv(out_path, index=False, compression="gzip")
 
-def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None):
+def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None, run_fn=run_vi):
     os.makedirs(output_dir, exist_ok=True)
     all_results = {}
 
@@ -168,7 +169,7 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                 print(f"DEBUG: About to call run_model_and_evaluate with X.shape={X.shape}, Y.shape={Y.shape}")
                 print(f"DEBUG: x_aux.shape={x_aux.shape}, hyperparams['d']={hyperparams['d']}")
                 print(f"DEBUG: max_iter={max_iter}")
-                results = run_model_and_evaluate(
+                results = run_fn(
                     x_data=X,
                     x_aux=x_aux,
                     y_data=Y,
@@ -243,9 +244,9 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
 
     return all_results
 
-def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500, 
+def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500,
                                   output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/combined",
-                                  seed=None, max_iter=100):
+                                  seed=None, max_iter=100, run_fn=run_vi):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
     # Prepare label matrix (Y) and auxiliary matrix (x_aux) depending on the
@@ -307,7 +308,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
     
     clear_memory()
     try:
-        results = run_model_and_evaluate(
+        results = run_fn(
             x_data=X,
             x_aux=x_aux,
             y_data=Y,
@@ -369,7 +370,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
 
 def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pathway_names,
                                 output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/pathway_initiated",
-                                seed=None, max_iter=100):
+                                seed=None, max_iter=100, run_fn=run_vi):
     """
     Run pathway-initialized experiment.
     Results will be saved directly into the provided output_dir (timestamped directory).
@@ -435,7 +436,7 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     plot_prefix = os.path.join(exp_output_dir, plot_prefix_basename)
     
     clear_memory()
-    results = run_model_and_evaluate(
+    results = run_fn(
         x_data=X,
         x_aux=x_aux,
         y_data=Y,
@@ -499,8 +500,11 @@ def main():
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
     parser.add_argument("--dataset", type=str, default="cyto", choices=["cyto", "ap", "emtab"], help="Which dataset to use: cyto, ap, or emtab")
     parser.add_argument("--label", type=str, help="Label column to use (for EMTAB dataset)")
+    parser.add_argument("--method", choices=["vi", "svi"], default="vi", help="Inference method to use")
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    run_fn = run_svi if args.method == "svi" else run_vi
 
     if not args.mask and not args.initialized and args.d is None and not args.combined and args.dataset != "emtab":
         parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified (except for emtab).")
@@ -708,7 +712,7 @@ def main():
         combined_results = run_combined_gp_and_pathway_experiment(
             dataset_name, adata, label_col, mask_array, pathway_names_list,
             n_gp=args.n_gp, output_dir=run_dir,
-            seed=None, max_iter=args.max_iter
+            seed=None, max_iter=args.max_iter, run_fn=run_fn
         )
         all_results["combined_config"] = combined_results
     
@@ -719,7 +723,7 @@ def main():
         adata, label_col = datasets[dataset_name]
         initialized_results = run_pathway_initialized_experiment(
             dataset_name, adata, label_col, mask_array, pathway_names_list,
-            output_dir=run_dir, seed=None, max_iter=args.max_iter
+            output_dir=run_dir, seed=None, max_iter=args.max_iter, run_fn=run_fn
         )
         all_results["initialized_config"] = initialized_results
     
@@ -738,7 +742,7 @@ def main():
         std_results = run_all_experiments(
             datasets, hyperparams_map, output_dir=run_dir,
             seed=None, mask=current_mask_for_run, max_iter=args.max_iter,
-            pathway_names=pathway_names_list
+            pathway_names=pathway_names_list, run_fn=run_fn
         )
         all_results.update(std_results)
 
