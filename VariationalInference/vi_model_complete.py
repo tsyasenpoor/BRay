@@ -339,6 +339,88 @@ class SupervisedPoissonFactorization:
 
         return {"mu_gamma": mu_g, "tau2_gamma": tau2_g}
 
+    # ----------------------------- Mini-batch Updates -----------------------------
+    def update_v_minibatch(self, params, expected, Y_b, X_aux_b, batch_idx, scale):
+        """Mini-batch update for v parameters with JJ bound."""
+        lam   = lambda_jj(params["zeta"][batch_idx])            # (m, κ)
+        theta = expected["E_theta"][batch_idx]                  # (m, K)
+
+        kappa, K = self.kappa, self.K
+        mu_v   = jnp.zeros((kappa, K))
+        tau2_v = jnp.zeros((kappa, K, K))
+
+        I = jnp.eye(K) / self.sigma2_v
+
+        for k in range(kappa):
+            S = I + 2.0 * scale * (theta.T * lam[:, k]).dot(theta)
+            L = jnp.linalg.cholesky(S)
+            Sigma_k = jsp.linalg.cho_solve((L, True), jnp.eye(K))
+            tau2_v = tau2_v.at[k].set(Sigma_k)
+
+            rhs = ((Y_b[:, k] - 0.5)
+                    - 2.0 * lam[:, k] * (X_aux_b @ expected["E_gamma"][k]))
+            rhs = scale * rhs @ theta
+            mu_v = mu_v.at[k].set(Sigma_k @ rhs)
+
+        return {"mu_v": mu_v, "tau2_v": tau2_v}
+
+    def update_gamma_minibatch(self, params, expected, Y_b, X_aux_b, batch_idx, scale):
+        """Mini-batch update for gamma parameters with JJ bound."""
+        lam   = lambda_jj(params["zeta"][batch_idx])            # (m, κ)
+        theta = expected["E_theta"][batch_idx]                  # (m, K)
+        v     = expected["E_v"]                                 # (κ, K)
+
+        kappa, d = self.kappa, X_aux_b.shape[1]
+        mu_g   = jnp.zeros((kappa, d))
+        tau2_g = jnp.zeros((kappa, d, d))
+
+        I = jnp.eye(d) / self.sigma2_gamma
+
+        for k in range(kappa):
+            S = I + 2.0 * scale * (X_aux_b.T * lam[:, k]) @ X_aux_b
+            L = jnp.linalg.cholesky(S)
+            Sigma_k = jsp.linalg.cho_solve((L, True), jnp.eye(d))
+            tau2_g = tau2_g.at[k].set(Sigma_k)
+
+            rhs = ((Y_b[:, k] - 0.5) - 2.0 * lam[:, k] * (theta @ v[k]))
+            rhs = scale * rhs @ X_aux_b
+            mu_g = mu_g.at[k].set(Sigma_k @ rhs)
+
+        return {"mu_gamma": mu_g, "tau2_gamma": tau2_g}
+
+    def update_theta_minibatch(self, params, expected_vals, z_b, Y_b, X_aux_b, batch_idx):
+        """Mini-batch update for theta parameters including logistic terms."""
+        a_theta_new = self.alpha_theta + jnp.sum(z_b, axis=1)
+
+        theta_current = expected_vals['E_theta'][batch_idx]
+        lam = lambda_jj(params['zeta'][batch_idx])
+
+        b_theta_poisson = jnp.expand_dims(expected_vals['E_xi'][batch_idx], 1) + \
+                         jnp.sum(expected_vals['E_beta'], axis=0)
+
+        b_theta_logistic = jnp.zeros((Y_b.shape[0], self.K))
+        for k in range(self.kappa):
+            term1 = -(Y_b[:, k:k+1] - 0.5) * expected_vals['E_v'][k, :]
+            term2 = -2.0 * jnp.expand_dims(lam[:, k], 1) * expected_vals['E_v'][k, :] * \
+                    jnp.expand_dims(X_aux_b @ expected_vals['E_gamma'][k].T, 1)
+            term3 = -2.0 * jnp.expand_dims(lam[:, k], 1) * \
+                    jnp.expand_dims(expected_vals['E_v'][k] ** 2, 0) * theta_current
+            b_theta_logistic += term1 + term2 + term3
+
+        b_theta_new = b_theta_poisson + b_theta_logistic
+        b_theta_new = jnp.maximum(b_theta_new, 1e-8)
+
+        return {'a_theta': a_theta_new, 'b_theta': b_theta_new}
+
+    def update_zeta_minibatch(self, params, expected_vals, Y_b, X_aux_b, batch_idx):
+        """Mini-batch update for zeta parameters used in JJ bound."""
+        theta_b = expected_vals['E_theta'][batch_idx]
+        A = jnp.sum(jnp.expand_dims(theta_b, 1) *
+                   jnp.expand_dims(expected_vals['E_v'], 0), axis=2) + \
+            X_aux_b @ expected_vals['E_gamma'].T
+        zeta_new = jnp.abs(A) + 0.01
+        return {'zeta': zeta_new}
+
 
     
     def update_theta(self, params, expected_vals, z, Y, X_aux):
