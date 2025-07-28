@@ -42,19 +42,54 @@ class SupervisedPoissonFactorization:
                  alpha_eta=1.0, lambda_eta=1.0, alpha_beta=1.0, 
                  alpha_xi=1.0, lambda_xi=1.0, alpha_theta=1.0,
                  sigma2_gamma=1.0, sigma2_v=1.0, key=None):
+        """
+        Initialize the Supervised Poisson Factorization model.
+        
+        Parameters:
+        -----------
+        n_samples : int
+            Number of samples
+        n_genes : int
+            Number of genes
+        n_factors : int
+            Number of factors (K)
+        n_outcomes : int
+            Number of outcomes (kappa)
+        alpha_eta, lambda_eta : float
+            Prior parameters for eta
+        alpha_beta : float
+            Prior parameter for beta
+        alpha_xi, lambda_xi : float
+            Prior parameters for xi
+        alpha_theta : float
+            Prior parameter for theta
+        sigma2_gamma : float
+            Prior variance for gamma
+        sigma2_v : float
+            Prior variance for v
+        key : jax.random.PRNGKey
+            Random key for initialization
+        """
+        self.n = n_samples
+        self.p = n_genes
+        self.K = n_factors
+        self.kappa = n_outcomes
+        
+        # Ensure hyperparameters are reasonable to prevent numerical issues
+        self.alpha_eta = max(alpha_eta, 1e-6)
+        self.lambda_eta = max(lambda_eta, 1e-6)
+        self.alpha_beta = max(alpha_beta, 1e-6)
+        self.alpha_xi = max(alpha_xi, 1e-6)
+        self.lambda_xi = max(lambda_xi, 1e-6)
+        self.alpha_theta = max(alpha_theta, 1e-6)
+        self.sigma2_gamma = max(sigma2_gamma, 1e-6)
+        self.sigma2_v = max(sigma2_v, 1e-6)
+        
+        self.key = key if key is not None else random.PRNGKey(0)
         
         print(f"DEBUG: SupervisedPoissonFactorization.__init__ called with n_samples={n_samples}, n_genes={n_genes}, n_factors={n_factors}, n_outcomes={n_outcomes}")
-        self.n, self.p, self.K, self.kappa = n_samples, n_genes, n_factors, n_outcomes
-        self.alpha_eta, self.lambda_eta = alpha_eta, lambda_eta
-        self.alpha_beta, self.alpha_xi = alpha_beta, alpha_xi
-        self.lambda_xi, self.alpha_theta = lambda_xi, alpha_theta
-        self.sigma2_gamma, self.sigma2_v = sigma2_gamma, sigma2_v
         
-        if key is None:
-            key = random.PRNGKey(0)
-        self.key = key
-        
-    def initialize_parameters(self, X, Y, X_aux):
+    def initialize_parameters(self, X, Y, X_aux, beta_init=None):
         """Initialize variational parameters using informed guesses"""
         print("DEBUG: Starting parameter initialization")
         
@@ -73,19 +108,38 @@ class SupervisedPoissonFactorization:
         print("DEBUG: Initialized theta")
         
         # Initialize beta  
-        beta_init = jnp.outer(gene_means / jnp.mean(gene_means), 
-                             jnp.ones(self.K)) + random.normal(keys[1], (self.p, self.K)) * 0.1
-        beta_init = jnp.maximum(beta_init, 0.1)
+        if beta_init is not None:
+            # Use provided beta_init if available
+            beta_init = jnp.array(beta_init)
+            print(f"DEBUG: Using provided beta_init with shape {beta_init.shape}")
+        else:
+            # Use default initialization
+            beta_init = jnp.outer(gene_means / jnp.mean(gene_means), 
+                                 jnp.ones(self.K)) + random.normal(keys[1], (self.p, self.K)) * 0.1
+            beta_init = jnp.maximum(beta_init, 0.1)
         print("DEBUG: Initialized beta")
         
         # Convert to Gamma parameters
         theta_var = theta_init * 0.5
+        # Ensure theta_var is never zero to prevent division by zero
+        theta_var = jnp.maximum(theta_var, 1e-8)
         a_theta = (theta_init**2) / theta_var
         b_theta = theta_init / theta_var
         
         beta_var = beta_init * 0.5
+        # Ensure beta_var is never zero to prevent division by zero
+        beta_var = jnp.maximum(beta_var, 1e-8)
         a_beta = (beta_init**2) / beta_var  
         b_beta = beta_init / beta_var
+        
+        # Debug: Check for NaN values after conversion
+        if jnp.any(jnp.isnan(a_theta)) or jnp.any(jnp.isnan(b_theta)):
+            print("WARNING: NaN values detected in theta parameters after conversion")
+        if jnp.any(jnp.isnan(a_beta)) or jnp.any(jnp.isnan(b_beta)):
+            print("WARNING: NaN values detected in beta parameters after conversion")
+            print(f"beta_init stats: min={jnp.min(beta_init):.4g}, max={jnp.max(beta_init):.4g}, mean={jnp.mean(beta_init):.4g}")
+            print(f"beta_var stats: min={jnp.min(beta_var):.4g}, max={jnp.max(beta_var):.4g}, mean={jnp.mean(beta_var):.4g}")
+        
         print("DEBUG: Converted to Gamma parameters")
         
         # Initialize eta and xi
@@ -112,8 +166,6 @@ class SupervisedPoissonFactorization:
         else:
             gamma_init = random.normal(keys[2], (self.kappa, X_aux.shape[1])) * 0.1
         print("DEBUG: Gamma initialization completed")
-        
-        # Continue with rest...
         
         mu_gamma = gamma_init
         tau2_gamma = jnp.ones((self.kappa, X_aux.shape[1])) * self.sigma2_gamma
@@ -149,7 +201,25 @@ class SupervisedPoissonFactorization:
             expected_linear = expected_linear[:, None]
 
         zeta = jnp.abs(expected_linear) + 0.1  # Small offset for stability
-        
+
+        # === Diagnostics for initialized parameters ===
+        def diag_stats(arr, name):
+            arr_np = np.array(arr)
+            print(f"[INIT] {name}: shape={arr_np.shape}, min={arr_np.min():.4g}, max={arr_np.max():.4g}, mean={arr_np.mean():.4g}, std={arr_np.std():.4g}")
+        diag_stats(a_theta, 'a_theta')
+        diag_stats(b_theta, 'b_theta')
+        diag_stats(a_beta, 'a_beta')
+        diag_stats(b_beta, 'b_beta')
+        diag_stats(a_eta, 'a_eta')
+        diag_stats(b_eta, 'b_eta')
+        diag_stats(a_xi, 'a_xi')
+        diag_stats(b_xi, 'b_xi')
+        diag_stats(mu_gamma, 'mu_gamma')
+        diag_stats(tau2_gamma, 'tau2_gamma')
+        diag_stats(mu_v, 'mu_v')
+        diag_stats(tau2_v, 'tau2_v')
+        diag_stats(zeta, 'zeta')
+
         return {
             'a_eta': a_eta, 'b_eta': b_eta,
             'a_xi': a_xi, 'b_xi': b_xi,
@@ -162,15 +232,21 @@ class SupervisedPoissonFactorization:
     
     def expected_values(self, params):
         """Compute expected values from variational parameters"""
-        E_eta = params['a_eta'] / params['b_eta']
-        E_xi = params['a_xi'] / params['b_xi']
-        E_beta = params['a_beta'] / params['b_beta']
-        E_theta = params['a_theta'] / params['b_theta']
+        # Ensure denominators are never zero
+        b_eta_safe = jnp.maximum(params['b_eta'], 1e-8)
+        b_xi_safe = jnp.maximum(params['b_xi'], 1e-8)
+        b_beta_safe = jnp.maximum(params['b_beta'], 1e-8)
+        b_theta_safe = jnp.maximum(params['b_theta'], 1e-8)
+        
+        E_eta = params['a_eta'] / b_eta_safe
+        E_xi = params['a_xi'] / b_xi_safe
+        E_beta = params['a_beta'] / b_beta_safe
+        E_theta = params['a_theta'] / b_theta_safe
         E_gamma = params['mu_gamma']
         E_v = params['mu_v']
         
         # Second moments for theta (needed for regression)
-        E_theta_sq = (params['a_theta'] / params['b_theta']**2) * (params['a_theta'] + 1)
+        E_theta_sq = (params['a_theta'] / (b_theta_safe**2)) * (params['a_theta'] + 1)
         E_theta_theta_T = jnp.expand_dims(E_theta_sq, -1) * jnp.eye(self.K) + \
                          jnp.expand_dims(E_theta, -1) @ jnp.expand_dims(E_theta, -2)
         
@@ -227,7 +303,7 @@ class SupervisedPoissonFactorization:
     
     # def update_v(self, params, expected_vals, Y, X_aux):
     #     """Update v parameters - equation (10)"""
-    #     lambda_vals = lambda_jj(params['zeta'])  # (n, kappa)
+    #     lambda_vals = lambda_jj(params['zeta'])  # (n, κ)
         
     #     # Compute precision matrix (diagonal + low-rank update)
     #     prec_diag = 1/self.sigma2_v + 2 * jnp.sum(
@@ -339,89 +415,6 @@ class SupervisedPoissonFactorization:
 
         return {"mu_gamma": mu_g, "tau2_gamma": tau2_g}
 
-    # ----------------------------- Mini-batch Updates -----------------------------
-    def update_v_minibatch(self, params, expected, Y_b, X_aux_b, batch_idx, scale):
-        """Mini-batch update for v parameters with JJ bound."""
-        lam   = lambda_jj(params["zeta"][batch_idx])            # (m, κ)
-        theta = expected["E_theta"][batch_idx]                  # (m, K)
-
-        kappa, K = self.kappa, self.K
-        mu_v   = jnp.zeros((kappa, K))
-        tau2_v = jnp.zeros((kappa, K, K))
-
-        I = jnp.eye(K) / self.sigma2_v
-
-        for k in range(kappa):
-            S = I + 2.0 * scale * (theta.T * lam[:, k]).dot(theta)
-            L = jnp.linalg.cholesky(S)
-            Sigma_k = jsp.linalg.cho_solve((L, True), jnp.eye(K))
-            tau2_v = tau2_v.at[k].set(Sigma_k)
-
-            rhs = ((Y_b[:, k] - 0.5)
-                    - 2.0 * lam[:, k] * (X_aux_b @ expected["E_gamma"][k]))
-            rhs = scale * rhs @ theta
-            mu_v = mu_v.at[k].set(Sigma_k @ rhs)
-
-        return {"mu_v": mu_v, "tau2_v": tau2_v}
-
-    def update_gamma_minibatch(self, params, expected, Y_b, X_aux_b, batch_idx, scale):
-        """Mini-batch update for gamma parameters with JJ bound."""
-        lam   = lambda_jj(params["zeta"][batch_idx])            # (m, κ)
-        theta = expected["E_theta"][batch_idx]                  # (m, K)
-        v     = expected["E_v"]                                 # (κ, K)
-
-        kappa, d = self.kappa, X_aux_b.shape[1]
-        mu_g   = jnp.zeros((kappa, d))
-        tau2_g = jnp.zeros((kappa, d, d))
-
-        I = jnp.eye(d) / self.sigma2_gamma
-
-        for k in range(kappa):
-            S = I + 2.0 * scale * (X_aux_b.T * lam[:, k]) @ X_aux_b
-            L = jnp.linalg.cholesky(S)
-            Sigma_k = jsp.linalg.cho_solve((L, True), jnp.eye(d))
-            tau2_g = tau2_g.at[k].set(Sigma_k)
-
-            rhs = ((Y_b[:, k] - 0.5) - 2.0 * lam[:, k] * (theta @ v[k]))
-            rhs = scale * rhs @ X_aux_b
-            mu_g = mu_g.at[k].set(Sigma_k @ rhs)
-
-        return {"mu_gamma": mu_g, "tau2_gamma": tau2_g}
-
-    def update_theta_minibatch(self, params, expected_vals, z_b, Y_b, X_aux_b, batch_idx):
-        """Mini-batch update for theta parameters including logistic terms."""
-        a_theta_new = self.alpha_theta + jnp.sum(z_b, axis=1)
-
-        theta_current = expected_vals['E_theta'][batch_idx]
-        lam = lambda_jj(params['zeta'][batch_idx])
-
-        b_theta_poisson = jnp.expand_dims(expected_vals['E_xi'][batch_idx], 1) + \
-                         jnp.sum(expected_vals['E_beta'], axis=0)
-
-        b_theta_logistic = jnp.zeros((Y_b.shape[0], self.K))
-        for k in range(self.kappa):
-            term1 = -(Y_b[:, k:k+1] - 0.5) * expected_vals['E_v'][k, :]
-            term2 = -2.0 * jnp.expand_dims(lam[:, k], 1) * expected_vals['E_v'][k, :] * \
-                    jnp.expand_dims(X_aux_b @ expected_vals['E_gamma'][k].T, 1)
-            term3 = -2.0 * jnp.expand_dims(lam[:, k], 1) * \
-                    jnp.expand_dims(expected_vals['E_v'][k] ** 2, 0) * theta_current
-            b_theta_logistic += term1 + term2 + term3
-
-        b_theta_new = b_theta_poisson + b_theta_logistic
-        b_theta_new = jnp.maximum(b_theta_new, 1e-8)
-
-        return {'a_theta': a_theta_new, 'b_theta': b_theta_new}
-
-    def update_zeta_minibatch(self, params, expected_vals, Y_b, X_aux_b, batch_idx):
-        """Mini-batch update for zeta parameters used in JJ bound."""
-        theta_b = expected_vals['E_theta'][batch_idx]
-        A = jnp.sum(jnp.expand_dims(theta_b, 1) *
-                   jnp.expand_dims(expected_vals['E_v'], 0), axis=2) + \
-            X_aux_b @ expected_vals['E_gamma'].T
-        zeta_new = jnp.abs(A) + 0.01
-        return {'zeta': zeta_new}
-
-
     
     def update_theta(self, params, expected_vals, z, Y, X_aux):
         """Update theta parameters with both Poisson and logistic regression terms"""
@@ -483,7 +476,7 @@ class SupervisedPoissonFactorization:
         zeta_new = jnp.abs(A) + 0.01  # Small offset for numerical stability
         
         return {'zeta': zeta_new}
-    def fit(self, X, Y, X_aux, n_iter=100, tol=1e-4, verbose=False):
+    def fit(self, X, Y, X_aux, n_iter=100, tol=1e-4, verbose=False, beta_init=None):
         """Main fitting loop.
 
         Parameters
@@ -501,11 +494,12 @@ class SupervisedPoissonFactorization:
         print(f"DEBUG: Data shapes: X={X.shape}, Y={Y.shape}, X_aux={X_aux.shape}")
         
         print(f"DEBUG: About to initialize parameters...")
-        params = self.initialize_parameters(X, Y, X_aux)
+        params = self.initialize_parameters(X, Y, X_aux, beta_init=beta_init)
         print(f"DEBUG: Parameters initialized successfully")
 
         from typing import Union
         previous_elbo: Union[float, None] = None
+        elbo_history = []  # Track ELBO values for plotting
         
         for iteration in range(n_iter):
             old_params = params.copy()
@@ -574,6 +568,7 @@ class SupervisedPoissonFactorization:
             # *** ALWAYS COMPUTE ELBO FOR MONOTONICITY CHECK ***
             current_elbo_val = self.compute_elbo(X, Y, X_aux, params, z, return_components=False, debug_print=False)
             # When return_components=False, compute_elbo returns a float directly
+            elbo_history.append(current_elbo_val)  # Track for plotting
             
             # === ELBO MONOTONICITY CHECK ===
             if previous_elbo is not None and isinstance(current_elbo_val, float) and current_elbo_val < previous_elbo:
@@ -634,6 +629,8 @@ class SupervisedPoissonFactorization:
                     print(f"Converged after {iteration+1} iterations")
                     break
         
+        # Store ELBO history in params for plotting
+        params['elbo_history'] = elbo_history
         return params, expected_vals
 
     # ----------------- ELBO (unchanged, but with λ clip) ----------------
@@ -715,7 +712,7 @@ class SupervisedPoissonFactorization:
         #     print("---------------------")
         # ---------- Logistic JJ bound --------------------------------
         psi     = E_theta @ params['mu_v'].T + X_aux @ params['mu_gamma'].T  # (n,κ)
-        zeta    = params['zeta']
+        #zeta    = params['zeta']
         lam     = lambda_jj(zeta)                                            # (n,κ)
 
         # If τ²_v is a full covariance (κ, K, K), take its diagonal; else assume it is already (κ, K)
@@ -746,28 +743,12 @@ class SupervisedPoissonFactorization:
         var_psi = jnp.einsum('ik,ck->ic', E_theta_sq_bounded, tau2_v_bounded) + \
                   (X_aux**2) @ tau2_gamma_bounded.T
 
-        # REMOVED: Debug prints moved to return_components section only
-        # Add debug output
-        # if debug_print:
-        #     print(f"  var_psi range: {jnp.min(var_psi):.2e} to {jnp.max(var_psi):.2e}")
-        #     print(f"  lam range: {jnp.min(lam):.2e} to {jnp.max(lam):.2e}")
-        #     print(f"  psi^2 range: {jnp.min(psi**2):.2e} to {jnp.max(psi**2):.2e}")
-
         # Bound the total variance term
         total_var = jnp.clip(psi**2 + var_psi, 1e-8, 1e8)
         logit_term2 = -jnp.sum(lam * total_var)
         logit_term3 = jnp.sum(lam * zeta**2 - jnp.log(1.0 + jnp.exp(-zeta)) - zeta / 2.0)
         logit_ll = logit_term1 + logit_term2 + logit_term3
         
-        # REMOVED: Debug prints moved to return_components section only
-        # Add debug output for logistic terms
-        # if debug_print:
-        #     print("--- LOGISTIC DEBUG ---")
-        #     print(f"  logit_term1 ((y-0.5)E[A])  : {logit_term1:.2f}")
-        #     print(f"  logit_term2 (-lam*E[A^2])  : {logit_term2:.2f}")
-        #     print(f"  logit_term3 (C(zeta) only) : {logit_term3:.2f}")
-        #     print(f"  Resulting logit_ll       : {logit_ll:.2f}")
-        #     print("------------------------")
         # ---------- KL divergences (Gamma / Gaussian) ---------------
         def kl_gamma(a_q, b_q, a0, b0):
             """
@@ -840,17 +821,78 @@ class SupervisedPoissonFactorization:
             self.alpha_xi, self.lambda_xi
         ).sum()
 
-        # Fixed KL divergences
+        # Fixed KL divergences with improved numerical stability
         # KL for v uses only diagonal elements of Σ_v to match mu_v shape
         # If any entries of tau2_v_diag are non‑positive, log() will produce
         # NaNs which propagate to the ELBO.  Apply a small lower bound for
         # numerical stability before computing the KL term.
         tau2_v_safe = jnp.clip(tau2_v_diag, 1e-8, 1e8)
-        kl_v = 0.5 * jnp.sum(
-            (params['mu_v'] ** 2 + tau2_v_safe) / self.sigma2_v
-            - jnp.log(tau2_v_safe) + jnp.log(self.sigma2_v) - 1
-        )
+        
+        # Check for numerical issues in mu_v and apply gentle stabilization
+        mu_v_safe = jnp.nan_to_num(params['mu_v'], nan=0.0, posinf=50.0, neginf=-50.0)
+        if jnp.any(jnp.isnan(params['mu_v'])) or jnp.any(jnp.isinf(params['mu_v'])):
+            print("WARNING KL_V: mu_v contains NaN/Inf, using safe values")
+        
+        # Check for extreme values that could cause overflow
+        max_mu_v = jnp.max(jnp.abs(mu_v_safe))
+        if max_mu_v > 100.0:
+            scale_factor = 100.0 / max_mu_v
+            print(f"WARNING KL_V: Large mu_v values (max={max_mu_v:.2e}), scaling by {scale_factor:.3f}")
+            mu_v_safe = mu_v_safe * scale_factor
 
+        print(f"DEBUG KL_V: mu_v_safe range: {jnp.min(mu_v_safe):.2e} to {jnp.max(mu_v_safe):.2e}")
+        print(f"DEBUG KL_V: tau2_v_safe range: {jnp.min(tau2_v_safe):.2e} to {jnp.max(tau2_v_safe):.2e}")
+        print(f"DEBUG KL_V: sigma2_v={self.sigma2_v}")
+        
+        # Compute KL divergence terms with numerical safety
+        # Term 1: (μ² + τ²) / σ²
+        term1_raw = (mu_v_safe ** 2 + tau2_v_safe) / self.sigma2_v
+        # Clip to prevent overflow in summation
+        term1 = jnp.clip(term1_raw, 0, 1e6)
+        if jnp.max(term1_raw) > 1e6:
+            print(f"WARNING KL_V: Large term1 values (max={jnp.max(term1_raw):.2e}), clipping to prevent overflow")
+        
+        # Term 2: -log(τ²)
+        log_tau2_v = jnp.log(tau2_v_safe)
+        term2 = -log_tau2_v
+        
+        # Check for problematic log values
+        if jnp.any(log_tau2_v < -20):
+            print(f"WARNING KL_V: Very small tau2_v values, min log(tau2)={jnp.min(log_tau2_v):.2e}")
+        if jnp.any(log_tau2_v > 20):
+            print(f"WARNING KL_V: Very large tau2_v values, max log(tau2)={jnp.max(log_tau2_v):.2e}")
+        
+        # Term 3: log(σ²)
+        term3 = jnp.log(self.sigma2_v)
+        
+        # Term 4: -1 (constant)
+        term4 = -1
+        
+        print(f"DEBUG KL_V: term1 range: {jnp.min(term1):.2e} to {jnp.max(term1):.2e}")
+        print(f"DEBUG KL_V: term2 range: {jnp.min(term2):.2e} to {jnp.max(term2):.2e}")
+        print(f"DEBUG KL_V: term3: {term3:.2e}")
+        print(f"DEBUG KL_V: term4: {term4:.2e}")
+        
+        # Compute final KL with overflow protection
+        kl_components = term1 + term2 + term3 + term4
+        
+        # Check for numerical issues before summation
+        if jnp.any(jnp.isnan(kl_components)):
+            print("ERROR KL_V: KL components contain NaN!")
+            kl_components = jnp.nan_to_num(kl_components, nan=0.0)
+        if jnp.any(jnp.isinf(kl_components)):
+            print("ERROR KL_V: KL components contain Inf!")
+            kl_components = jnp.nan_to_num(kl_components, posinf=1e6, neginf=-1e6)
+            
+        kl_v = 0.5 * jnp.sum(kl_components)
+        
+        # Final safety check
+        if jnp.isnan(kl_v) or jnp.isinf(kl_v):
+            print(f"ERROR KL_V: Final kl_v is {kl_v}, using fallback value")
+            kl_v = 1e6  # Large but finite penalty
+        
+        print(f"DEBUG KL_V: final kl_v = {kl_v:.2e}")
+        
         if params['tau2_gamma'].ndim == 3:  # Full covariance (kappa, d, d)
             tau2_gamma_diag = jnp.diagonal(params['tau2_gamma'], axis1=1, axis2=2)  # (kappa, d)
         else:  # Already diagonal (kappa, d)
@@ -864,6 +906,10 @@ class SupervisedPoissonFactorization:
         # Add numerical bounds check
         if jnp.any(jnp.isnan(kl_v)) or jnp.any(jnp.isinf(kl_v)):
             print("WARNING: KL_v contains NaN/Inf values!")
+            print(f"  Original kl_v: {kl_v}")
+            print(f"  mu_v has NaN: {jnp.any(jnp.isnan(params['mu_v']))}")
+            print(f"  tau2_v_diag has NaN: {jnp.any(jnp.isnan(tau2_v_diag))}")
+            print(f"  tau2_v_safe has NaN: {jnp.any(jnp.isnan(tau2_v_safe))}")
             kl_v = jnp.nan_to_num(kl_v, nan=1e6, posinf=1e6, neginf=-1e6)
         
         kl_total = kl_theta + kl_beta + kl_eta + kl_xi + kl_v + kl_gamma_coef
@@ -1086,11 +1132,13 @@ def run_model_and_evaluate(
     plot_prefix=None,
     return_params=False,
     verbose=False,
+    beta_init=None,
 ):
     """Fit the model on training data and evaluate on splits (no data leakage)."""
 
+    # If seed is None, use a valid random integer seed for sklearn
     if seed is None:
-        seed = 0
+        seed = np.random.randint(0, 2**32)
 
     if y_data.ndim == 1:
         y_data = y_data.reshape(-1, 1)
@@ -1130,7 +1178,7 @@ def run_model_and_evaluate(
     )
     print(f"DEBUG: Model created successfully, about to call model.fit with max_iters={max_iters}, verbose={verbose}")
 
-    params, expected = model.fit(x_data[train_idx], y_data[train_idx], x_aux[train_idx], n_iter=max_iters, verbose=verbose)
+    params, expected = model.fit(x_data[train_idx], y_data[train_idx], x_aux[train_idx], n_iter=max_iters, verbose=verbose, beta_init=beta_init)
     print(f"DEBUG: Model fitting completed successfully")
 
     # Compute probabilities for training set
@@ -1170,5 +1218,42 @@ def run_model_and_evaluate(
         for k, v in params.items():
             if isinstance(v, jnp.ndarray):
                 results[k] = np.array(v).tolist()
+
+    # Plot and save ELBO if requested
+    if plot_elbo and 'elbo_history' in params and len(params['elbo_history']) > 0:
+        try:
+            import matplotlib.pyplot as plt
+            
+            plt.figure(figsize=(10, 6))
+            elbo_iterations = list(range(1, len(params['elbo_history']) + 1))
+            plt.plot(elbo_iterations, params['elbo_history'], 
+                    'b-', linewidth=2, label="ELBO")
+            plt.xlabel("Iteration")
+            plt.ylabel("Evidence Lower Bound (ELBO)")
+            plt.title("ELBO Convergence During VI Training")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            
+            # Save plot to file if plot_prefix is provided
+            if plot_prefix is not None:
+                import os
+                os.makedirs(plot_prefix, exist_ok=True)
+                plot_path = os.path.join(plot_prefix, "vi_elbo_convergence.png")
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                print(f"ELBO plot saved to {plot_path}")
+                
+                # Also save as PDF for publications
+                pdf_path = os.path.join(plot_prefix, "vi_elbo_convergence.pdf")
+                plt.savefig(pdf_path, bbox_inches='tight')
+            
+            # Store plot data in results
+            results["elbo_iterations"] = elbo_iterations
+            results["elbo_values"] = params['elbo_history']
+            
+            plt.close()  # Close to free memory
+            
+        except Exception as e:
+            print(f"Warning: Could not create ELBO plot: {e}")
 
     return results

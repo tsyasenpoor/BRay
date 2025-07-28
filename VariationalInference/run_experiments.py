@@ -111,8 +111,8 @@ def save_beta_matrix_csv(E_beta, gene_names, row_names, mu_v, out_path):
         data.append(row)
     df = pd.DataFrame(data)
     df.to_csv(out_path, index=False, compression="gzip")
-
-def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None, run_fn=run_vi):
+def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA_BRAY/BRay/SVIResults/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None, run_fn=run_vi):
+# def run_all_experiments(datasets, hyperparams_map, output_dir="/mnt/research/aguiarlab/proj/SSPA-BRAY/BRay/SVIResults/unmasked", seed=None, mask=None, max_iter=100, pathway_names=None, run_fn=run_vi):
     os.makedirs(output_dir, exist_ok=True)
     all_results = {}
 
@@ -122,9 +122,10 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
         if dataset_name == "emtab":
             # For EMTAB, Y contains both Crohn's disease and ulcerative colitis columns
             if label_col == "both_labels":
-                Y = adata.obs[['Crohn\'s disease', 'ulcerative colitis']].values.astype(float)
+                label_names = ["Crohn's disease", "ulcerative colitis"]
+                Y = adata.obs[label_names].values.astype(float)
             else:
-                # Use specific label column if provided
+                label_names = [label_col]
                 Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
             X = adata.X
             var_names = list(adata.var_names)
@@ -132,8 +133,19 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
             # For EMTAB, x_aux includes both age and sex_female columns
             x_aux = adata.obs[['age', 'sex_female']].values.astype(float)
             sample_ids = adata.obs.index.tolist()
+        elif dataset_name == "thyroid":
+            # For Thyroid Cancer dataset, Y contains Clinical_History column
+            label_names = [label_col]  # label_col should be "Clinical_History"
+            Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+            X = adata.X
+            var_names = list(adata.var_names)
+            
+            # For Thyroid, x_aux includes both Age and sex_female columns
+            x_aux = adata.obs[['Age', 'sex_female']].values.astype(float)
+            sample_ids = adata.obs.index.tolist()
         else:
             # For AJM datasets (ajm_cyto, ajm_ap), use original logic
+            label_names = [label_col]
             Y = adata.obs[label_col].values.astype(float).reshape(-1,1) 
             X = adata.X  
             var_names = list(adata.var_names)
@@ -188,6 +200,8 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
                     plot_elbo=True,
                     plot_prefix=os.path.join(output_dir, "elbo_trace")
                 )
+                # Attach label names to results for summary printing
+                results["label_names"] = label_names
                 print(f"DEBUG: run_model_and_evaluate completed successfully")
 
                 if "error" in results:
@@ -245,7 +259,7 @@ def run_all_experiments(datasets, hyperparams_map, output_dir="/labs/Aguiar/SSPA
     return all_results
 
 def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask, pathway_names, n_gp=500,
-                                  output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/combined",
+                                  output_dir="/labs/Aguiar/SSPA_BRAY/BRay/SVIResults/combined",
                                   seed=None, max_iter=100, run_fn=run_vi):
     print(f"\nRunning combined pathway+GP experiment on {dataset_name}, label={label_col}, with {n_gp} additional gene programs")
     
@@ -256,6 +270,9 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
     if dataset_name == "emtab" and label_col == "both_labels":
         Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
         x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
+    elif dataset_name == "thyroid":
+        Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+        x_aux = adata.obs[["Age", "sex_female"]].values.astype(float)
     else:
         Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
         x_aux = np.ones((adata.shape[0], 1))
@@ -369,7 +386,7 @@ def run_combined_gp_and_pathway_experiment(dataset_name, adata, label_col, mask,
         return results
 
 def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pathway_names,
-                                output_dir="/labs/Aguiar/SSPA_BRAY/BRay/Results/pathway_initiated",
+                                output_dir="/labs/Aguiar/SSPA_BRAY/BRay/SVIResults/pathway_initiated",
                                 seed=None, max_iter=100, run_fn=run_vi):
     """
     Run pathway-initialized experiment.
@@ -385,6 +402,9 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
     if dataset_name == "emtab" and label_col == "both_labels":
         Y = adata.obs[["Crohn's disease", "ulcerative colitis"]].values.astype(float)
         x_aux = adata.obs[["age", "sex_female"]].values.astype(float)
+    elif dataset_name == "thyroid":
+        Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
+        x_aux = adata.obs[["Age", "sex_female"]].values.astype(float)
     else:
         Y = adata.obs[label_col].values.astype(float).reshape(-1, 1)
         x_aux = np.ones((adata.shape[0], 1))
@@ -405,13 +425,32 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
         scores = adata.obs['cyto_seed_score'].values
         print(f"Found cyto_seed_score in dataset with mean value: {np.mean(scores):.4f}")
 
-    hyperparams = {
-        "alpha_eta": 0.1, "lambda_eta": 3.0,
-        "alpha_beta": 0.01,
-        "alpha_xi": 0.1, "lambda_xi": 3.0,
-        "alpha_theta": 0.01,
-        "sigma2_v": 1.0, "sigma2_gamma": 1.0
-    }
+    # Use dataset-specific hyperparameters
+    if dataset_name == "thyroid":
+        hyperparams = {
+            "alpha_eta": 2.45, "lambda_eta": 0.035,
+            "alpha_beta": 2.18,
+            "alpha_xi": 0.61, "lambda_xi": 0.21,
+            "alpha_theta": 0.019,
+            "sigma2_v": 0.23, "sigma2_gamma": 0.10
+        }
+    elif dataset_name == "emtab":
+        hyperparams = {
+            "alpha_eta": 0.1, "lambda_eta": 3.0,
+            "alpha_beta": 0.01,
+            "alpha_xi": 0.1, "lambda_xi": 3.0,
+            "alpha_theta": 0.01,
+            "sigma2_v": 1.0, "sigma2_gamma": 1.0
+        }
+    else:
+        # Default hyperparameters for other datasets
+        hyperparams = {
+            "alpha_eta": 0.1, "lambda_eta": 3.0,
+            "alpha_beta": 0.01,
+            "alpha_xi": 0.1, "lambda_xi": 3.0,
+            "alpha_theta": 0.01,
+            "sigma2_v": 1.0, "sigma2_gamma": 1.0
+        }
     
     n_pathways = mask.shape[1]
     hyperparams["d"] = n_pathways
@@ -426,6 +465,10 @@ def run_pathway_initialized_experiment(dataset_name, adata, label_col, mask, pat
             if seed is not None:
                 np.random.seed(seed + i)
             beta_init[pathway_genes, i] += np.random.uniform(0, 0.1, size=len(pathway_genes))
+    
+    # Ensure no exact zeros to prevent division by zero in model initialization
+    # Add small positive values to all entries
+    beta_init = beta_init + 1e-8
     
     # Use the provided output_dir (timestamped directory) directly
     exp_output_dir = output_dir
@@ -498,7 +541,7 @@ def main():
     parser.add_argument("--combined", action="store_true", help="Run combined pathway+gene program configuration")
     parser.add_argument("--n_gp", type=int, default=500, help="Number of gene programs to learn in combined mode")
     parser.add_argument("--initialized", action="store_true", help="Run pathway-initialized unmasked configuration")
-    parser.add_argument("--dataset", type=str, default="cyto", choices=["cyto", "ap", "emtab"], help="Which dataset to use: cyto, ap, or emtab")
+    parser.add_argument("--dataset", type=str, default="cyto", choices=["cyto", "ap", "emtab", "thyroid"], help="Which dataset to use: cyto, ap, emtab, or thyroid")
     parser.add_argument("--label", type=str, help="Label column to use (for EMTAB dataset)")
     parser.add_argument("--method", choices=["vi", "svi"], default="vi", help="Inference method to use")
     parser.add_argument("--profile", action="store_true", help=argparse.SUPPRESS)
@@ -506,8 +549,8 @@ def main():
 
     run_fn = run_svi if args.method == "svi" else run_vi
 
-    if not args.mask and not args.initialized and args.d is None and not args.combined and args.dataset != "emtab":
-        parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified (except for emtab).")
+    if not args.mask and not args.initialized and args.d is None and not args.combined and args.dataset not in ["emtab", "thyroid"]:
+        parser.error("When --mask, --combined, and --initialized flags are not used, --d must be specified (except for emtab and thyroid).")
 
     # Determine the base output directory (e.g., .../masked, .../unmasked)
     if args.combined:
@@ -520,7 +563,9 @@ def main():
         base_output_dir_name = "unmasked"
     
     # Define the root results directory
-    root_results_dir = "/labs/Aguiar/SSPA_BRAY/BRay/Results"
+    # root_results_dir = "/mnt/research/aguiarlab/proj/SSPA-BRAY/BRay/SVIResults"
+    root_results_dir = "/labs/Aguiar/SSPA_BRAY/BRay/SVIResults"
+
     base_output_dir = os.path.join(root_results_dir, base_output_dir_name)
     os.makedirs(base_output_dir, exist_ok=True)
     
@@ -586,11 +631,11 @@ def main():
         
         # Set up hyperparams for EMTAB
         hyperparams_emtab = {
-            "alpha_eta": 0.1, "lambda_eta": 3.0,
-            "alpha_beta": 0.01,
-            "alpha_xi": 0.1, "lambda_xi": 3.0,
-            "alpha_theta": 0.01,
-            "sigma2_v": 1.0, "sigma2_gamma": 1.0
+            "alpha_eta": 0.04, "lambda_eta": 0.11,
+            "alpha_beta": 0.11,
+            "alpha_xi": 0.02, "lambda_xi": 1.82,
+            "alpha_theta": 8.7,
+            "sigma2_v": 0.57, "sigma2_gamma": 0.034
         }
         if args.mask:
             hyperparams_emtab["d"] = mask_array.shape[1]
@@ -604,9 +649,81 @@ def main():
                 hyperparams_emtab["d"] = args.d
                 print(f"Using specified d value: {args.d}")
             else:
-                hyperparams_emtab["d"] = 50
-                print(f"Using default d value: 50")
+                hyperparams_emtab["d"] = 320
+                print(f"Using default d value: 320")
         hyperparams_map = {"emtab": hyperparams_emtab}
+
+    elif args.dataset == "thyroid":
+        # Load Thyroid Cancer data
+        thyroid_data = prepare_and_load_thyroid()
+        label_col = "Clinical_History"  # Single label column for thyroid dataset
+        print(f"Loaded Thyroid Cancer data with shape {thyroid_data.shape} and label column '{label_col}'")
+        datasets["thyroid"] = (thyroid_data, label_col)
+        
+        # Pathway mask logic for Thyroid (same as other datasets)
+        if args.mask or args.combined or args.initialized:
+            gene_names = list(thyroid_data.var_names)
+            if args.reduced_pathways and args.reduced_pathways > 0:
+                if args.reduced_pathways >= len(pathways):
+                    print(f"Warning: Requested {args.reduced_pathways} pathways but only {len(pathways)} are available. Using all pathways.")
+                    pathway_names_list = list(pathways.keys())
+                else:
+                    print(f"Using a reduced set of {args.reduced_pathways} pathways out of {len(pathways)} total pathways")
+                    random.seed(42)
+                    pathway_names_list = random.sample(list(pathways.keys()), args.reduced_pathways)
+                    print(f"Selected {len(pathway_names_list)} pathways randomly")
+            else:
+                pathway_names_list = list(pathways.keys())
+            print(f"Number of genes: {len(gene_names)}")
+            print(f"Number of pathways: {len(pathway_names_list)}")
+            M = pd.DataFrame(0, index=gene_names, columns=pathway_names_list)
+            print("Filling matrix M...")
+            chunk_size = 100
+            total_chunks = (len(pathway_names_list) + chunk_size - 1) // chunk_size
+            for chunk_idx in range(total_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min((chunk_idx + 1) * chunk_size, len(pathway_names_list))
+                current_pathways = pathway_names_list[start_idx:end_idx]
+                print(f"Processing pathway chunk {chunk_idx+1}/{total_chunks}, pathways {start_idx} to {end_idx}")
+                for pathway in current_pathways:
+                    gene_list = pathways[pathway]
+                    for gene in gene_list:
+                        if gene in M.index:
+                            M.loc[gene, pathway] = 1
+            print(f"Matrix M created with shape {M.shape}")
+            log_array_sizes({'M': M.values, 'thyroid_data.X': thyroid_data.X})
+            mask_array = M.values
+            print(f"Mask shape: {mask_array.shape}, dtype: {mask_array.dtype}")
+            non_zero_entries = np.count_nonzero(mask_array)
+            total_entries = mask_array.size
+            sparsity = 100 * (1 - non_zero_entries / total_entries)
+            print(f"Mask sparsity: {sparsity:.2f}% ({non_zero_entries} non-zero entries out of {total_entries})")
+            del M
+            clear_memory()
+        
+        # Set up hyperparams for Thyroid (using similar values to EMTAB since both are human datasets)
+        hyperparams_thyroid = {
+            "alpha_eta": 2.45, "lambda_eta": 0.035,
+            "alpha_beta": 2.18,
+            "alpha_xi": 0.61, "lambda_xi": 0.21,
+            "alpha_theta": 0.019,
+            "sigma2_v": 0.23, "sigma2_gamma": 0.10
+        }
+        if args.mask:
+            hyperparams_thyroid["d"] = mask_array.shape[1]
+            print(f"Using mask-based d value: {mask_array.shape[1]}")
+        elif args.combined:
+            print(f"Combined config will use total d = {mask_array.shape[1]} + {args.n_gp}")
+        elif args.initialized:
+            print(f"Initialized config will use d = {mask_array.shape[1]}")
+        else:
+            if args.d is not None:
+                hyperparams_thyroid["d"] = args.d
+                print(f"Using specified d value: {args.d}")
+            else:
+                hyperparams_thyroid["d"] = 1320
+                print(f"Using default d value: 1320")
+        hyperparams_map = {"thyroid": hyperparams_thyroid}
 
     else:
         # Load AJM data (cyto or ap)
@@ -751,19 +868,50 @@ def main():
 
     print("\nSummary of results:")
     print("-" * 80)
-    print(f"{'Experiment':<30} {'Train Acc':<10} {'Val Acc':<10} {'Test Acc':<10} {'Train F1':<10} {'Val F1':<10} {'Test F1':<10}")
-    print("-" * 60)
-    for exp_name, res in all_results.items():
-        if res and 'train_metrics' in res and 'test_metrics' in res and 'val_metrics' in res: 
-            train_acc = res['train_metrics']['accuracy']
-            val_acc   = res['val_metrics']['accuracy']
-            test_acc  = res['test_metrics']['accuracy']
-            train_f1  = res['train_metrics']['f1']
-            val_f1    = res['val_metrics']['f1']
-            test_f1   = res['test_metrics']['f1']
-            print(f"{exp_name:<30} {train_acc:<10.4f} {val_acc:<10.4f} {test_acc:<10.4f} {train_f1:<10.4f} {val_f1:<10} {test_f1:<10.4f}")
-        else:
-            print(f"{exp_name:<30} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
+    # Check if any result has per_class_metrics
+    any_per_class = any(
+        res and 'train_metrics' in res and isinstance(res['train_metrics'].get('per_class_metrics', None), list)
+        for res in all_results.values()
+    )
+    if any_per_class:
+        # Print a table for each label
+        # Find the first result with per_class_metrics to get number of labels
+        for exp_name, res in all_results.items():
+            if res and 'train_metrics' in res and isinstance(res['train_metrics'].get('per_class_metrics', None), list):
+                n_labels = len(res['train_metrics']['per_class_metrics'])
+                label_names = res.get('label_names', [f"Label {i+1}" for i in range(n_labels)])
+                break
+        for label_idx in range(n_labels):
+            label_name = label_names[label_idx] if label_idx < len(label_names) else f"Label {label_idx+1}"
+            print(f"\nSummary of results for label: {label_name}")
+            print("-" * 80)
+            print(f"{'Experiment':<30} {'Train Acc':<10} {'Val Acc':<10} {'Test Acc':<10} {'Train F1':<10} {'Val F1':<10} {'Test F1':<10}")
+            print("-" * 60)
+            for exp_name, res in all_results.items():
+                if res and 'train_metrics' in res and 'test_metrics' in res and 'val_metrics' in res and \
+                   isinstance(res['train_metrics'].get('per_class_metrics', None), list):
+                    train_m = res['train_metrics']['per_class_metrics'][label_idx]
+                    val_m = res['val_metrics']['per_class_metrics'][label_idx]
+                    test_m = res['test_metrics']['per_class_metrics'][label_idx]
+                    print(f"{exp_name:<30} {train_m['accuracy']:<10.4f} {val_m['accuracy']:<10.4f} {test_m['accuracy']:<10.4f} "
+                          f"{train_m['f1']:<10.4f} {val_m['f1']:<10.4f} {test_m['f1']:<10.4f}")
+                else:
+                    print(f"{exp_name:<30} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
+    else:
+        # Fallback: single-label summary as before
+        print(f"{'Experiment':<30} {'Train Acc':<10} {'Val Acc':<10} {'Test Acc':<10} {'Train F1':<10} {'Val F1':<10} {'Test F1':<10}")
+        print("-" * 60)
+        for exp_name, res in all_results.items():
+            if res and 'train_metrics' in res and 'test_metrics' in res and 'val_metrics' in res: 
+                train_acc = res['train_metrics']['accuracy']
+                val_acc   = res['val_metrics']['accuracy']
+                test_acc  = res['test_metrics']['accuracy']
+                train_f1  = res['train_metrics']['f1']
+                val_f1    = res['val_metrics']['f1']
+                test_f1   = res['test_metrics']['f1']
+                print(f"{exp_name:<30} {train_acc:<10.4f} {val_acc:<10.4f} {test_acc:<10.4f} {train_f1:<10.4f} {val_f1:<10} {test_f1:<10.4f}")
+            else:
+                print(f"{exp_name:<30} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
 
 if __name__ == "__main__":
     import sys
